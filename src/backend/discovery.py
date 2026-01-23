@@ -34,10 +34,11 @@ class DiscoveryManager:
             while self.running:
                 try:
                     data, addr = s.recvfrom(4096)
-                    if addr[0] == self.local_ip:
-                        continue # Ignore self
-                    
                     msg = pickle.loads(data)
+
+                    if msg.sender_id == self.node_id:
+                        continue # Ignore
+                    
                     if msg.msg_type == 'HELLO':
                         self.log(f"Peer {msg.sender_id} found at {addr[0]}")
                         on_peer_found(msg.sender_id, addr[0], msg.payload.get('tcp_port'))

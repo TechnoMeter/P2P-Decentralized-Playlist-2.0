@@ -19,8 +19,12 @@ class StateManager:
         # Message buffer for causal ordering
         # Stores messages that arrived too early (waiting for dependencies)
         self.pending_messages: List[Message] = []
+
+        self.uptime = 0
         
         self.lock = threading.Lock()
+
+        self.host_id = None
 
     def log(self, text):
         if self.logger: self.logger(f"[State] {text}")
@@ -62,9 +66,27 @@ class StateManager:
             self.peers[node_id] = {'ip': ip, 'port': port, 'status': 'alive'}
             if node_id not in self.vector_clock:
                 self.vector_clock[node_id] = 0
+        self.log(f"Updated peer list: {self.peers}")
 
     def add_song(self, song: Song):
         with self.lock:
             self.playlist.append(song)
             self.log(f"Added to queue: {song.title} by {song.artist}")
             return True
+        
+    def update_uptime(self, seconds):
+        with self.lock:
+            self.uptime = seconds
+
+    def set_host(self, node_id):
+        with self.lock:
+            self.host_id = node_id
+
+    def get_host(self):
+        with self.lock:
+            return self.host_id
+        
+    def is_host(self, node_id):
+        with self.lock:
+            self.log(f"Checking if {node_id} is host: {self.host_id}")
+            return self.host_id == node_id

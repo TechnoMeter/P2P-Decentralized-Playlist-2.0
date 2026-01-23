@@ -5,16 +5,18 @@ from src.utils.config import ELECTION_TIMEOUT, HOST_TIMEOUT
 class ElectionManager:
     """Implements the Bully Algorithm for Leader Election."""
     
-    def __init__(self, node_id, network_node, logger_callback=None):
+    def __init__(self, node_id, state, network_node, logger_callback=None):
         self.node_id = node_id
         self.network = network_node
         self.logger = logger_callback
+        self.state = state
         
         self.leader_id = None
         self.is_election_running = False
         self.received_answer = False
         
-        self.last_heartbeat = time.time()
+        self.init_time = time.time()
+        self.last_heartbeat = self.init_time
         self.is_host = False
         
         self.lock = threading.Lock()
@@ -25,6 +27,7 @@ class ElectionManager:
     def start_election(self):
         """Initiates an election by notifying all higher-ID nodes."""
         with self.lock:
+            self.log(self.state.peers)
             self.log(f"Starting election. My ID: {self.node_id}")
             self.is_election_running = True
             self.received_answer = False
@@ -48,6 +51,7 @@ class ElectionManager:
                 self.declare_victory()
             self.is_election_running = False
 
+    # TODO: Handle lower ID nodes starting elections while one is ongoing
     def on_election_received(self, sender_id):
         """Responds to an election request from a lower-ID node."""
         if sender_id < self.node_id:
@@ -66,6 +70,7 @@ class ElectionManager:
         with self.lock:
             self.is_host = True
             self.leader_id = self.node_id
+            self.state.set_host(self.node_id)
             self.log("I am the new Host!")
         
         # Notify everyone
@@ -76,14 +81,15 @@ class ElectionManager:
         """Updated when a new coordinator is announced."""
         with self.lock:
             self.leader_id = leader_id
+            self.state.set_host(leader_id)
             self.is_host = (leader_id == self.node_id)
             self.is_election_running = False
-            self.last_heartbeat = time.time()
+            self.update_heartbeat()
             self.log(f"New Host: {leader_id}")
 
     def on_heartbeat_received(self):
         """Resets the failure detection timer."""
-        self.last_heartbeat = time.time()
+        self.update_heartbeat()
 
     def check_for_host_failure(self):
         """Continuously monitors if the current Host is alive."""
@@ -92,3 +98,8 @@ class ElectionManager:
                 self.log(f"Host {self.leader_id} timed out! Starting election...")
                 self.leader_id = None
                 self.start_election()
+
+    def update_heartbeat(self):
+        self.last_heartbeat = time.time()
+        self.state.update_uptime(int(self.last_heartbeat - self.init_time))
+        self.log(f"Updated heartbeat. Uptime: {self.state.uptime} seconds")

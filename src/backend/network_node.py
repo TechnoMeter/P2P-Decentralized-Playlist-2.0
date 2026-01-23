@@ -96,7 +96,11 @@ class NetworkNode:
                 self._process_message(msg)
         except Exception as e:
             if self.running:
-                self.log(f"Peer {peer_id or addr[0]} disconnected: {e}")
+                self.log(f"Peer {peer_id or addr[0]} disconnected: {e} {self.state.peers}")
+                if (self.state.is_host(peer_id)) and self.election:
+                    self.log("Host disconnected! Initiating election...")
+                    self.election.start_election()
+                
         finally:
             if peer_id and peer_id in self.connections:
                 self.connections.pop(peer_id, None)
@@ -119,7 +123,10 @@ class NetworkNode:
             self.connections[node_id] = s
             
             # Send initial WELCOME handshake to identify ourselves
-            self.send_to_peer(node_id, 'WELCOME', payload={'id': self.node_id})
+            if (self.state.is_host(self.node_id)):
+                self.send_to_peer(node_id, 'WELCOME', payload={'id': self.node_id})
+            #self.send_to_peer(node_id, 'WELCOME', payload={'id': self.node_id})
+            self.state.update_peer(node_id, ip, port)
             self.log(f"Link established to: {node_id} ({ip}:{port})")
             
             # Start a listener for this specific socket
@@ -178,16 +185,20 @@ class NetworkNode:
             self.log(f"Buffering out-of-order {msg.msg_type} from {sender_id}")
             self.state.pending_messages.append(msg)
 
+    # TODO: Add another message type HELLO for initial handshake
     def _handle_logic(self, msg: Message):
         """Distributes messages to specific subsystem logic and updates shared state."""
         m_type = msg.msg_type
         
         if m_type == 'WELCOME':
+            self.log("welcome")
             self.state.update_peer(msg.sender_id, msg.sender_ip, self.port)
             # Newly connected? Ask for the current playlist state immediately
             self.send_to_peer(msg.sender_id, 'REQUEST_STATE')
+            self.state.set_host(msg.sender_id)
             
         elif m_type == 'REQUEST_STATE':
+            self.log(f"All Peers: {self.state.peers}")
             # Peer asked for our playlist; provide current queue and now-playing data
             self.send_to_peer(msg.sender_id, 'FULL_STATE_SYNC', payload={
                 'playlist': self.state.playlist,

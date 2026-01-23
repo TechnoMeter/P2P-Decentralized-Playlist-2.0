@@ -11,6 +11,7 @@ from src.backend.audio_engine import AudioEngine
 from src.utils.config import TCP_PORT, HEARTBEAT_INTERVAL
 from src.frontend.app_ui import PlaylistUI
 from src.utils.models import Song
+from src.utils import config
 
 class CollaborativeNode:
     """Main controller for the Decentralized Playlist."""
@@ -27,7 +28,7 @@ class CollaborativeNode:
         self.network = NetworkNode(self.node_id, self.state, self.ui_log)
         self.network.port = self.tcp_port
         
-        self.election = ElectionManager(self.node_id, self.network, self.ui_log)
+        self.election = ElectionManager(self.node_id, self.state, self.network, self.ui_log)
         self.network.election = self.election 
         
         self.discovery = DiscoveryManager(self.node_id, self.tcp_port, self.ui_log)
@@ -73,7 +74,7 @@ class CollaborativeNode:
         if not hasattr(self, 'ui'): return
         
         is_host = self.election.is_host
-        leader = self.election.leader_id
+        leader = self.state.get_host()
         
         # Update Role and toggle controls visibility
         self.ui.set_controls_visible(is_host)
@@ -85,7 +86,7 @@ class CollaborativeNode:
         else:
             status = "Election in progress..."
         self.ui.status_label.config(text=f"Role: {status}")
-        
+        self.ui_log(f"Role updated: {status}, {is_host}, {leader}")
         cp = self.state.current_song
         self.ui.now_playing_label.config(text=cp.title if cp else "Nothing is playing")
 
@@ -107,6 +108,7 @@ class CollaborativeNode:
                 higher_nodes = [pid for pid in self.network.state.peers.keys() if pid > self.node_id]
                 if higher_nodes and not self.election.is_election_running:
                     self.election.is_host = False
+                    self.ui_log(f"_maintenance_loop: ELECTION")
                     self.election.start_election()
 
                 if self.audio.is_busy():
@@ -148,17 +150,20 @@ class CollaborativeNode:
         self.discovery.start_listener(self.on_peer_discovered)
         self.discovery.broadcast_presence()
         threading.Thread(target=self._maintenance_loop, daemon=True).start()
-        def delayed_election():
-            time.sleep(1.0)
-            self.election.start_election()
-        threading.Thread(target=delayed_election, daemon=True).start()
+        if not self.state.peers:
+            def delayed_election():
+                time.sleep(1.0)
+                self.ui_log(f"start: ELECTION")
+                self.election.start_election()
+            threading.Thread(target=delayed_election, daemon=True).start()
         self.ui.run()
 
     def on_peer_discovered(self, pid, ip, port):
         if str(pid) != str(self.node_id):
             self.network.connect_to_peer(pid, ip, port)
             if self.election.is_host and str(pid) > str(self.node_id):
-                self.election.start_election()
+                self.ui_log(f"on_peer_discovered: ELECTION")
+                # self.election.start_election()
 
 if __name__ == "__main__":
     cid = sys.argv[1] if len(sys.argv) > 1 else None
