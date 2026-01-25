@@ -2,6 +2,7 @@ import threading
 import time
 from src.utils.config import ELECTION_TIMEOUT, HOST_TIMEOUT
 
+# TODO Handle heartbeat/battery based host assignment
 class ElectionManager:
     """Implements the Bully Algorithm for Leader Election."""
     
@@ -51,7 +52,6 @@ class ElectionManager:
                 self.declare_victory()
             self.is_election_running = False
 
-    # TODO: Handle lower ID nodes starting elections while one is ongoing
     def on_election_received(self, sender_id):
         """Responds to an election request from a lower-ID node."""
         if sender_id < self.node_id:

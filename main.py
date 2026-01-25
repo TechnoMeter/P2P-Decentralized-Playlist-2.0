@@ -86,7 +86,7 @@ class CollaborativeNode:
         else:
             status = "Election in progress..."
         self.ui.status_label.config(text=f"Role: {status}")
-        self.ui_log(f"Role updated: {status}, {is_host}, {leader}")
+        # self.ui_log(f"Role updated: {status}, {is_host}, {leader}")
         cp = self.state.current_song
         self.ui.now_playing_label.config(text=cp.title if cp else "Nothing is playing")
 
@@ -150,12 +150,12 @@ class CollaborativeNode:
         self.discovery.start_listener(self.on_peer_discovered)
         self.discovery.broadcast_presence()
         threading.Thread(target=self._maintenance_loop, daemon=True).start()
-        if not self.state.peers:
-            def delayed_election():
-                time.sleep(1.0)
-                self.ui_log(f"start: ELECTION")
-                self.election.start_election()
-            threading.Thread(target=delayed_election, daemon=True).start()
+        self.ui_log(f"Node started. {self.state.peers}")
+        def delayed_election():
+            time.sleep(1.0)
+            self.ui_log(f"start: ELECTION")
+            self.election.start_election()
+        threading.Thread(target=delayed_election, daemon=True).start()
         self.ui.run()
 
     def on_peer_discovered(self, pid, ip, port):

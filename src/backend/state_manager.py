@@ -78,9 +78,14 @@ class StateManager:
         with self.lock:
             self.uptime = seconds
 
+    def get_uptime(self):
+        with self.lock:
+            return self.uptime
+
     def set_host(self, node_id):
         with self.lock:
             self.host_id = node_id
+            self.log(f"Set host to: {self.host_id}")
 
     def get_host(self):
         with self.lock:
