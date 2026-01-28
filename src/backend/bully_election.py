@@ -34,13 +34,13 @@ class ElectionManager:
             self.is_election_running = True
             self.received_answer = False
             
-        all_nodes = [pid for pid in self.network.state.peers.keys()]
+        higher_nodes = [pid for pid in self.network.state.peers.keys() if pid > self.node_id]
         
-        if not all_nodes:
+        if not higher_nodes:
             # I am the highest ID node
             self.declare_victory()
         else:
-            for pid in all_nodes:
+            for pid in higher_nodes:
                 payload={
                     'uptime': self.state.get_uptime()
                 }
@@ -64,6 +64,7 @@ class ElectionManager:
         self.log(f"Election received from {sender_id}. My metric: {my_metric}, Sender metric: {sender_metric}")
         if sender_metric < my_metric:
             self.network.send_to_peer(sender_id, 'ANSWER')
+            self.log(f"Sent ANSWER to {sender_id}")
             # Start own election to propagate
             if not self.is_election_running:
                 self.start_election()
