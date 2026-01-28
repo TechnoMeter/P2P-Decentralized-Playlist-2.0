@@ -104,12 +104,8 @@ class CollaborativeNode:
             if self.election.is_host:
                 for pid in list(self.network.connections.keys()):
                     self.network.send_to_peer(pid, 'HEARTBEAT')
-                
-                higher_nodes = [pid for pid in self.network.state.peers.keys() if pid > self.node_id]
-                if higher_nodes and not self.election.is_election_running:
-                    self.election.is_host = False
-                    self.ui_log(f"_maintenance_loop: ELECTION")
-                    self.election.start_election()
+                    self.ui_log(f"Sent HEARTBEAT to {pid}")
+                    self.election.update_heartbeat()
 
                 if self.audio.is_busy():
                     current_pos = self.audio.get_current_pos()

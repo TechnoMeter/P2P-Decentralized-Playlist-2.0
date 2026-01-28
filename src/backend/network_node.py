@@ -194,7 +194,7 @@ class NetworkNode:
         elif m_type in ['ELECTION', 'ANSWER', 'COORDINATOR']:
             if self.election:
                 if m_type == 'ELECTION': 
-                    self.election.on_election_received(msg.sender_id)
+                    self.election.on_election_received(msg.sender_id, msg.payload.get('uptime'))
                 elif m_type == 'ANSWER': self.election.on_answer_received()
                 elif m_type == 'COORDINATOR': 
                     leader_id = msg.payload['leader_id']

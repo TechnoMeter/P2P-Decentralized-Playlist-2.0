@@ -20,7 +20,7 @@ class ElectionManager:
         self.last_heartbeat = self.init_time
         self.is_host = False
         
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def log(self, text):
         if self.logger: self.logger(f"[Election] {text}")
@@ -28,19 +28,23 @@ class ElectionManager:
     def start_election(self):
         """Initiates an election by notifying all higher-ID nodes."""
         with self.lock:
+            self.leader_id = self.state.get_host()
             self.log(self.state.peers)
             self.log(f"Starting election. My ID: {self.node_id}")
             self.is_election_running = True
             self.received_answer = False
             
-        higher_nodes = [pid for pid in self.network.state.peers.keys() if pid > self.node_id]
+        all_nodes = [pid for pid in self.network.state.peers.keys()]
         
-        if not higher_nodes:
+        if not all_nodes:
             # I am the highest ID node
             self.declare_victory()
         else:
-            for pid in higher_nodes:
-                self.network.send_to_peer(pid, 'ELECTION')
+            for pid in all_nodes:
+                payload={
+                    'uptime': self.state.get_uptime()
+                }
+                self.network.send_to_peer(pid, 'ELECTION', payload=payload)
             
             # Wait for ANSWER messages
             threading.Timer(ELECTION_TIMEOUT, self._check_election_results).start()
@@ -48,14 +52,19 @@ class ElectionManager:
     def _check_election_results(self):
         """Checks if any higher-ID node responded during the timeout."""
         with self.lock:
+            self.log("Election timeout reached.")
             if not self.received_answer and self.is_election_running:
                 self.declare_victory()
             self.is_election_running = False
 
-    def on_election_received(self, sender_id):
-        """Responds to an election request from a lower-ID node."""
-        if sender_id < self.node_id:
+    def on_election_received(self, sender_id, sender_uptime):
+        # Use composite metric: primary = uptime, secondary = node ID
+        my_metric = (self.state.get_uptime(), self.node_id)
+        sender_metric = (sender_uptime, sender_id)
+        self.log(f"Election received from {sender_id}. My metric: {my_metric}, Sender metric: {sender_metric}")
+        if sender_metric < my_metric:
             self.network.send_to_peer(sender_id, 'ANSWER')
+            # Start own election to propagate
             if not self.is_election_running:
                 self.start_election()
 
@@ -97,9 +106,11 @@ class ElectionManager:
             if time.time() - self.last_heartbeat > HOST_TIMEOUT:
                 self.log(f"Host {self.leader_id} timed out! Starting election...")
                 self.leader_id = None
-                self.start_election()
+                if (not self.is_election_running):
+                    self.start_election()
 
     def update_heartbeat(self):
-        self.last_heartbeat = time.time()
-        self.state.update_uptime(int(self.last_heartbeat - self.init_time))
-        self.log(f"Updated heartbeat. Uptime: {self.state.uptime} seconds")
+        with self.lock:
+            self.last_heartbeat = time.time()
+            self.state.update_uptime(int(self.last_heartbeat - self.init_time))
+            self.log(f"Updated heartbeat. Uptime: {self.state.uptime} seconds")
