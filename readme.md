@@ -5,3 +5,4 @@ Yet to do
 3. Persist the users if they re-enter
 4. Player UI (see old prompt)
 5. Play songs in different laptops and check
+6. Handle songs being not avalable in other systems
