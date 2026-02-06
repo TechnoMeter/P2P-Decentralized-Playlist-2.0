@@ -10,10 +10,11 @@ class PlaylistUI:
     and management buttons.
     """
     
-    def __init__(self, node_id, on_add_song_callback):
+    def __init__(self, node_id, display_name, on_add_song_callback):
         self.node_id = node_id
+        self.display_name = display_name
         self.root = tk.Tk()
-        self.root.title(f"P2P Playlist - {node_id}")
+        self.root.title(f"P2P Playlist - {display_name} ({node_id})")
         self.root.geometry("850x650")
         self.root.configure(bg=BG_MAIN)
         
@@ -301,10 +302,10 @@ class PlaylistUI:
         
         # Update Role Text
         if is_host:
-            role_text = f"HOST (You: {self.node_id})"
+            role_text = f"HOST - {self.display_name} ({self.node_id})"
             fg_color = TEXT_HOST
         elif host_id:
-            role_text = f"LISTENER (Host: {host_id})"
+            role_text = f"LISTENER - Host: {host_id}"
             fg_color = TEXT_HOST
         else:
             role_text = "Finding Host..."

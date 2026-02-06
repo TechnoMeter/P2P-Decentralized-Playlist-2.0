@@ -6,9 +6,15 @@ TCP_PORT = 5001          # For TCP State Sync
 BUFFER_SIZE = 8192       # Standard buffer for object serialization
 
 # Timing Constants (Seconds) - Optimized for faster failover
-HEARTBEAT_INTERVAL = 1.0 
+HEARTBEAT_INTERVAL = 1.0
 HOST_TIMEOUT = 3.1       # Miss ~3 heartbeats = Host Failure (Reduced from 6s)
-ELECTION_TIMEOUT = 3.0   
+ELECTION_TIMEOUT = 3.0
+
+# Weighted Bully Algorithm - Uptime Threshold
+# If sender's uptime exceeds receiver's uptime by this amount,
+# the receiver YIELDS (doesn't send ANSWER), allowing more stable nodes to win.
+# Lower value = stability preferred, Higher value = username preferred
+UPTIME_THRESHOLD = 60    # seconds (default: balanced)   
 
 # UI Theme (Lucrative Colors)
 THEME = {

@@ -61,12 +61,35 @@ class StateManager:
                     return False
         return True
 
-    def update_peer(self, node_id, ip, port):
+    def update_peer(self, node_id, ip, port, username=None):
         with self.lock:
-            self.peers[node_id] = {'ip': ip, 'port': port, 'status': 'alive'}
+            # Preserve existing username if not provided
+            existing = self.peers.get(node_id, {})
+            self.peers[node_id] = {
+                'ip': ip,
+                'port': port,
+                'status': 'alive',
+                'username': username or existing.get('username', node_id)
+            }
             if node_id not in self.vector_clock:
                 self.vector_clock[node_id] = 0
-        self.log(f"Updated peer list: {self.peers}")
+        self.log(f"Updated peer: {node_id} ({username})")
+
+    def get_peer_username(self, node_id):
+        """Get the username for a peer node."""
+        with self.lock:
+            peer = self.peers.get(node_id, {})
+            return peer.get('username', node_id)
+
+    def get_higher_username_peers(self, my_username):
+        """Get list of peer node_ids with usernames higher than mine (for Bully Algorithm)."""
+        with self.lock:
+            higher = []
+            for node_id, info in self.peers.items():
+                peer_username = info.get('username', node_id)
+                if peer_username > my_username:
+                    higher.append(node_id)
+            return higher
 
     def add_song(self, song: Song):
         with self.lock:

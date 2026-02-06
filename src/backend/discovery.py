@@ -7,9 +7,10 @@ from src.utils.models import Message
 
 class DiscoveryManager:
     """Handles UDP broadcasting and listening for peer discovery."""
-    
-    def __init__(self, node_id, tcp_port, logger_callback=None):
+
+    def __init__(self, node_id, display_name, tcp_port, logger_callback=None):
         self.node_id = node_id
+        self.display_name = display_name  # Username for Bully Algorithm
         self.tcp_port = tcp_port
         self.local_ip = get_local_ip()
         self.logger = logger_callback
@@ -56,8 +57,14 @@ class DiscoveryManager:
                         continue # Ignore self
                     
                     if msg.msg_type == 'HELLO':
-                        self.log(f"Peer {msg.sender_id} found at {addr[0]}")
-                        on_peer_found(msg.sender_id, addr[0], msg.payload.get('tcp_port'))
+                        peer_username = msg.payload.get('username', msg.sender_id)
+                        self.log(f"Peer {peer_username} ({msg.sender_id}) found at {addr[0]}")
+                        on_peer_found(
+                            msg.sender_id,
+                            addr[0],
+                            msg.payload.get('tcp_port'),
+                            peer_username
+                        )
                 except Exception as e:
                     if self.running:
                         self.log(f"Error in listen loop: {e}")
@@ -67,19 +74,22 @@ class DiscoveryManager:
         # We use a separate socket for sending to avoid interference with the listener
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            
+
             msg = Message(
                 sender_id=self.node_id,
                 sender_ip=self.local_ip,
                 msg_type='HELLO',
-                payload={'tcp_port': self.tcp_port}
+                payload={
+                    'tcp_port': self.tcp_port,
+                    'username': self.display_name  # Include username for Bully Algorithm
+                }
             )
-            
+
             # Broadcast to the entire subnet
             s.sendto(pickle.dumps(msg), ('<broadcast>', UDP_PORT))
             # Also send to localhost explicitly to help local instances find each other
             s.sendto(pickle.dumps(msg), ('127.0.0.1', UDP_PORT))
-            self.log("Broadcasted presence to network.")
+            self.log(f"Broadcasted presence: {self.display_name} ({self.node_id})")
 
     def stop(self):
         self.running = False

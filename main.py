@@ -1,27 +1,40 @@
 import sys
-import uuid
+import hashlib
 import time
 import threading
 import socket
 from src.backend.discovery import DiscoveryManager
 from src.backend.network_node import NetworkNode
 from src.backend.state_manager import StateManager
-from src.backend.bully_election import ElectionManager
+from src.backend.weighted_bully_election import WeightedBullyElection
 from src.backend.audio_engine import AudioEngine
 from src.utils.config import TCP_PORT, HEARTBEAT_INTERVAL
 from src.frontend.app_ui import PlaylistUI
 from src.utils.models import Song
 from src.utils import config
 
+
+def generate_node_id(username: str, password: str) -> str:
+    """
+    Generate a deterministic node ID from username and password.
+    Same credentials will always produce the same ID.
+    """
+    combined = f"{username}:{password}"
+    hash_obj = hashlib.sha256(combined.encode('utf-8'))
+    return hash_obj.hexdigest()[:8]
+
+
 class CollaborativeNode:
     """Main controller for the Decentralized Playlist."""
-    
-    def __init__(self, node_id=None):
-        self.node_id = node_id or str(uuid.uuid4())[:8]
+
+    def __init__(self, username: str, password: str):
+        # Generate deterministic node ID from credentials
+        self.node_id = generate_node_id(username, password)
+        self.display_name = username
         self.tcp_port = self._find_available_port(TCP_PORT)
-        
-        # Initialize UI with the add_song callback
-        self.ui = PlaylistUI(self.node_id, self.on_add_song_request)
+
+        # Initialize UI with display name and node ID
+        self.ui = PlaylistUI(self.node_id, self.display_name, self.on_add_song_request)
         
         # --- Backend Initialization ---
         self.state = StateManager(self.node_id, self.ui_log)
@@ -31,13 +44,13 @@ class CollaborativeNode:
         # History track list for "Previous" functionality
         self.history = [] 
         
-        self.network = NetworkNode(self.node_id, self.state, self.ui_log)
+        self.network = NetworkNode(self.node_id, self.display_name, self.state, self.ui_log)
         self.network.port = self.tcp_port
-        
-        self.election = ElectionManager(self.node_id, self.state, self.network, self.ui_log)
-        self.network.election = self.election 
-        
-        self.discovery = DiscoveryManager(self.node_id, self.tcp_port, self.ui_log)
+
+        self.election = WeightedBullyElection(self.node_id, self.display_name, self.state, self.network, self.ui_log)
+        self.network.election = self.election
+
+        self.discovery = DiscoveryManager(self.node_id, self.display_name, self.tcp_port, self.ui_log)
         self.audio = AudioEngine(self.ui_log)
         self.network.audio = self.audio
         
@@ -74,7 +87,7 @@ class CollaborativeNode:
     
     def on_add_song_request(self, file_path):
         title = file_path.replace("\\", "/").split("/")[-1]
-        new_song = Song(title=title, added_by=self.node_id, file_path=file_path)
+        new_song = Song(title=title, added_by=self.display_name, file_path=file_path)
         self.state.add_song(new_song)
         # Propagate to network
         for pid in list(self.network.connections.keys()):
@@ -209,11 +222,25 @@ class CollaborativeNode:
         
         self.ui.run()
 
-    def on_peer_discovered(self, pid, ip, port):
+    def on_peer_discovered(self, pid, ip, port, username=None):
         if str(pid) != str(self.node_id):
-            self.network.connect_to_peer(pid, ip, port)
+            self.network.connect_to_peer(pid, ip, port, username)
 
 if __name__ == "__main__":
-    cid = sys.argv[1] if len(sys.argv) > 1 else None
-    node = CollaborativeNode(cid)
+    if len(sys.argv) < 3:
+        print("=" * 50)
+        print("P2P Decentralized Playlist")
+        print("=" * 50)
+        print("\nUsage: python main.py <username> <password>")
+        print("\nExample: python main.py tejesh mypassword123")
+        print("\nNote: Same username + password will generate the")
+        print("      same node ID for reconnection.")
+        print("=" * 50)
+        sys.exit(1)
+
+    username = sys.argv[1]
+    password = sys.argv[2]
+
+    print(f"Starting node for user: {username}")
+    node = CollaborativeNode(username, password)
     node.start()

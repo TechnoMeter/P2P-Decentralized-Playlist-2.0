@@ -14,19 +14,20 @@ class NetworkNode:
     and coordinates between discovery, election, and audio subsystems.
     """
     
-    def __init__(self, node_id, state_manager, logger_callback=None):
-        self.node_id = str(node_id) 
+    def __init__(self, node_id, display_name, state_manager, logger_callback=None):
+        self.node_id = str(node_id)
+        self.display_name = display_name  # Username for identification
         self.state = state_manager
         self.logger = logger_callback
         self.running = True
-        
+
         # This port is dynamically assigned by CollaborativeNode in main.py
-        self.port = TCP_PORT 
-        
+        self.port = TCP_PORT
+
         # Subsystem references (populated by main.py)
         self.election = None
-        self.audio = None 
-        
+        self.audio = None
+
         # Active peer connections: {node_id: socket}
         self.connections: Dict[str, socket.socket] = {}
         
@@ -111,21 +112,29 @@ class NetworkNode:
             if peer_id in self.connections: self.connections.pop(peer_id)
             conn.close()
 
-    def connect_to_peer(self, node_id, ip, port):
+    def connect_to_peer(self, node_id, ip, port, username=None):
         node_id = str(node_id)
-        if node_id == self.node_id or node_id in self.connections: return
+        if node_id == self.node_id or node_id in self.connections:
+            return
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(3.0)
             s.connect((ip, port))
             s.settimeout(None)
             self.connections[node_id] = s
-            self.state.update_peer(node_id, ip, port)
+            self.state.update_peer(node_id, ip, port, username=username)
 
             if self.state.is_host(self.node_id):
-                self.send_to_peer(node_id, 'WELCOME', payload={'id': self.node_id})
+                self.send_to_peer(node_id, 'WELCOME', payload={
+                    'id': self.node_id,
+                    'username': self.display_name
+                })
 
-            self.send_to_peer(node_id, 'HELLO', payload={'id': self.node_id})
+            # Send HELLO with username for Bully Algorithm
+            self.send_to_peer(node_id, 'HELLO', payload={
+                'id': self.node_id,
+                'username': self.display_name
+            })
 
             threading.Thread(target=self._handle_client, args=(s, (ip, port)), daemon=True).start()
         except Exception as e:
@@ -160,15 +169,22 @@ class NetworkNode:
 
     def _handle_logic(self, msg: Message):
         m_type = msg.msg_type
-        if m_type == 'WELCOME': 
+        if m_type == 'WELCOME':
             self.state.set_host(msg.sender_id)
+            # Store host's username
+            host_username = msg.payload.get('username', msg.sender_id)
+            self.state.update_peer(msg.sender_id, msg.sender_ip, self.port, username=host_username)
 
         elif m_type == 'HEARTBEAT':
             if self.election:
                 self.election.on_heartbeat_received()
 
         elif m_type == 'HELLO':
-            self.state.update_peer(msg.sender_id, msg.sender_ip, self.port)
+            # Extract username from HELLO payload
+            peer_username = msg.payload.get('username', msg.sender_id)
+            self.state.update_peer(msg.sender_id, msg.sender_ip, self.port, username=peer_username)
+            self.log(f"Peer registered: {peer_username} ({msg.sender_id})")
+
             # Only request state if we don't have a host or if this is the host
             if not self.state.get_host() or self.state.is_host(msg.sender_id):
                 self.send_to_peer(msg.sender_id, 'REQUEST_STATE')
@@ -193,13 +209,19 @@ class NetworkNode:
 
         elif m_type in ['ELECTION', 'ANSWER', 'COORDINATOR']:
             if self.election:
-                if m_type == 'ELECTION': 
-                    self.election.on_election_received(msg.sender_id, msg.payload.get('uptime'))
-                elif m_type == 'ANSWER': self.election.on_answer_received()
-                elif m_type == 'COORDINATOR': 
+                if m_type == 'ELECTION':
+                    self.election.on_election_received(
+                        msg.sender_id,
+                        msg.payload.get('uptime', 0),
+                        msg.payload.get('username', msg.sender_id)  # Fallback to ID if no username
+                    )
+                elif m_type == 'ANSWER':
+                    self.election.on_answer_received()
+                elif m_type == 'COORDINATOR':
                     leader_id = msg.payload['leader_id']
                     self.election.on_coordinator_received(leader_id)
-                    if leader_id != self.node_id and self.audio: self.audio.stop()
+                    if leader_id != self.node_id and self.audio:
+                        self.audio.stop()
         
         elif m_type == 'QUEUE_SYNC':
             song = msg.payload.get('song')

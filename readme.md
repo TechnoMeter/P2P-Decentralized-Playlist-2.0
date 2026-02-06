@@ -24,7 +24,7 @@ This application implements a fully decentralized peer-to-peer music playlist sy
 
 - **No central server** - All nodes are equal participants
 - **Automatic peer discovery** - Uses UDP broadcast to find peers on the local network
-- **Democratic host election** - Implements the Bully Algorithm for leader election
+- **Democratic host election** - Implements the Weighted Bully Algorithm for leader election
 - **Synchronized playback** - Only the host controls playback; listeners receive state updates
 - **Causal ordering** - Uses Vector Clocks to ensure consistent message ordering across nodes
 
@@ -73,7 +73,7 @@ This application implements a fully decentralized peer-to-peer music playlist sy
 │     │                 ┌─────────────┐                           │
 │     └────────────────►│  Election   │                           │
 │                       │  Manager    │                           │
-│                       │(Bully Algo) │                           │
+│                       │(Weighted)   │                           │
 │                       └─────────────┘                           │
 │                              │                                   │
 │                              ▼                                   │
@@ -93,7 +93,7 @@ This application implements a fully decentralized peer-to-peer music playlist sy
    Node B ◄─────────────────────────┘
    Node B ──[TCP Connection]──► Node A
 
-2. LEADER ELECTION (Bully Algorithm)
+2. LEADER ELECTION (Weighted Bully Algorithm)
    Node A ──[ELECTION]──► Higher ID Nodes
                               │
    Node B ◄───[ANSWER]────────┘  (if higher)
@@ -179,13 +179,26 @@ Node B: {A:0, B:1} receives → merges to {A:1, B:1}
 
 Messages that arrive "too early" are buffered in `pending_messages` until dependencies are satisfied.
 
-### 4. Bully Algorithm (Leader Election)
+### 4. Weighted Bully Algorithm with Uptime Threshold (Leader Election)
 
-**File:** `src/backend/bully_election.py`
+**File:** `src/backend/weighted_bully_election.py`
 
-Elects the node with the highest composite metric as host.
+Combines username-based authority with stability preference using an **Uptime Veto** mechanism.
 
-**Election Metric:** `(uptime, node_id)` - Primary: uptime seconds, Tiebreaker: node ID
+**How It Works:**
+
+1. **Routing:** ELECTION sent only to higher-username peers (standard Bully)
+2. **Uptime Veto:** If sender has significantly more uptime, receiver YIELDS
+3. **Standard Bully:** If uptime difference within threshold, username wins
+
+**Configuration:** `UPTIME_THRESHOLD` in config.py (default: 60 seconds)
+
+| Sender Uptime | Receiver Uptime | Difference | Result |
+|---------------|-----------------|------------|--------|
+| 500s | 100s | 400s > 60s | Receiver YIELDS, sender wins |
+| 120s | 100s | 20s < 60s | Standard Bully, higher username wins |
+
+**Important:** The hash ID is only used for network identification. Election uses username + uptime veto.
 
 **Process:**
 1. Node initiates election by sending `ELECTION` to all higher-metric nodes
@@ -232,7 +245,7 @@ Elects the node with the highest composite metric as host.
 
 - [x] Automatic peer discovery via UDP broadcast
 - [x] TCP-based reliable communication
-- [x] Bully algorithm leader election
+- [x] Weighted Bully algorithm leader election (uptime-based)
 - [x] Vector clock causal ordering
 - [x] Shared playlist queue synchronization
 - [x] Audio playback with pygame
@@ -288,25 +301,44 @@ pip install -r requirements.txt
 ### Starting a Node
 
 ```bash
-# Default (auto-generated node ID)
-python main.py
-
-# Custom node ID
-python main.py my_node_id
+python main.py <username> <password>
 ```
+
+**Arguments:**
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `username` | Yes | Your display name visible to other users |
+| `password` | Yes | Secret used to generate unique node ID |
+
+**Example:**
+```bash
+python main.py tejesh mypassword123
+```
+
+### How Authentication Works
+
+1. A SHA-256 hash is generated from `username:password`
+2. First 8 characters of hash become the node ID
+3. Same credentials always produce the same node ID
+4. This allows reconnection with the same identity
+
+**Display Format:** `username (hash_id)`
+- Window title: `P2P Playlist - tejesh (a1b2c3d4)`
+- Host status: `HOST - tejesh (a1b2c3d4)`
+- Listener status: `LISTENER - Host: a1b2c3d4`
 
 ### Running Multiple Instances (Testing)
 
 Each instance automatically finds an available port:
 ```bash
 # Terminal 1
-python main.py node1
+python main.py alice password1
 
 # Terminal 2
-python main.py node2
+python main.py bob password2
 
 # Terminal 3
-python main.py node3
+python main.py charlie password3
 ```
 
 ### UI Controls
@@ -475,9 +507,9 @@ Manages distributed state with vector clocks.
 - `add_song(song)` - Thread-safe queue addition
 - `set_host(node_id)` / `get_host()` - Host management
 
-### `src/backend/bully_election.py` - ElectionManager
+### `src/backend/weighted_bully_election.py` - WeightedBullyElection
 
-Implements Bully Algorithm for leader election.
+Implements Weighted Bully Algorithm for leader election using uptime as primary weight.
 
 **Key Methods:**
 - `start_election()` - Initiates election process
@@ -614,7 +646,7 @@ P2P-Decentralized-Playlist-2.0/
     │       └── waera - harinezumi [NCS Release].mp3
     ├── backend/
     │   ├── audio_engine.py     # Pygame audio playback
-    │   ├── bully_election.py   # Leader election algorithm
+    │   ├── weighted_bully_election.py  # Weighted Bully leader election
     │   ├── discovery.py        # UDP peer discovery
     │   ├── network_node.py     # TCP communication
     │   └── state_manager.py    # Distributed state & vector clocks
