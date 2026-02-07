@@ -110,11 +110,12 @@ class CollaborativeNode:
         return int(self.simulated_battery)
 
     def on_add_song_request(self, file_path):
-        # Extract just the filename to be OS-agnostic
-        filename = os.path.basename(file_path)
-        # Store only the filename as the file_path in the Song object
-        # We assume the file exists in the local directory or a specific assets folder
-        new_song = Song(title=filename, added_by=self.display_name, file_path=filename)
+        # Determine Title
+        title = os.path.basename(file_path)
+        
+        # Store full path for local playback.
+        new_song = Song(title=title, added_by=self.display_name, file_path=file_path)
+        
         self.state.add_song(new_song)
         self._broadcast('QUEUE_SYNC', {'song': new_song})
 
@@ -297,23 +298,33 @@ class CollaborativeNode:
     def _resolve_path(self, file_path):
         """
         Attempts to resolve the file path across different OS environments.
-        Assumes audio files are in the same directory as main.py or a known subfolder.
+        Priority:
+        1. Exact path (for local add)
+        2. CWD filename (for peer transfer in same dir)
+        3. 'assets' or 'music' subfolder
         """
-        # If absolute path exists, use it
+        if not file_path:
+            return ""
+
+        # 1. Exact Absolute/Relative Path (Works if OS matches or path is simple)
         if os.path.exists(file_path):
             return file_path
             
-        # Try local directory with just the filename
-        filename = os.path.basename(file_path)
+        # 2. Extract Filename robustly (Handling mixed separators)
+        # Replace backslashes with forward slashes to handle Windows paths on Linux/Mac
+        normalized_path = file_path.replace('\\', '/')
+        filename = os.path.basename(normalized_path)
+        
         if os.path.exists(filename):
             return filename
             
-        # Try an 'assets' or 'music' subfolder if you have one
-        # assets_path = os.path.join("assets", filename)
-        # if os.path.exists(assets_path):
-        #     return assets_path
+        # 3. Common Subfolders
+        for sub in ['assets', 'music', 'songs']:
+            potential = os.path.join(sub, filename)
+            if os.path.exists(potential):
+                return potential
             
-        return file_path # Return original if resolution fails
+        return file_path # Return original if all else fails
 
     def _play_song_logic(self, song, start_offset=0):
         # Resolve path for cross-OS compatibility
@@ -334,8 +345,16 @@ class CollaborativeNode:
                     self.state.current_song = None 
                     self.state.current_duration = 0 # Reset duration
                     self.state.current_song_pos = 0
+                    
+                    # RESET Play State Here
+                    self.state.is_playing = False
+                    self.local_is_paused = False
+                    self.ui.update_play_pause_icon(False)
+                    
                     self._broadcast('NOW_PLAYING', {'song': None}) 
                     self._broadcast('PLAYBACK_SYNC', {'pos': 0, 'dur': 0})
+                    self._broadcast('PLAYBACK_STATUS', {'is_playing': False, 'shuffle': self.state.shuffle_active, 'repeat_mode': self.state.repeat_mode})
+                    
                     self.ui_log("Queue ended (last song missing).")
                 return
             
