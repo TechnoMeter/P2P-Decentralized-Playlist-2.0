@@ -113,10 +113,11 @@ class NetworkNode:
             s.connect((ip, port))
             s.settimeout(None)
             self.connections[node_id] = s
+            # Initial update without name (will be updated via HELLO)
             self.state.update_peer(node_id, ip, port)
 
             # Send Identity (ID + Name)
-            payload = {'id': self.node_id, 'name': self.display_name}
+            payload = {'id': self.node_id, 'name': self.display_name, 'is_reply': False}
             
             if self.state.is_host(self.node_id):
                 self.send_to_peer(node_id, 'WELCOME', payload=payload)
@@ -174,7 +175,17 @@ class NetworkNode:
 
         elif m_type == 'HELLO':
             name = payload.get('name', 'Unknown')
+            is_reply = payload.get('is_reply', False)
+            
+            # Update peer info with name
             self.state.update_peer(msg.sender_id, msg.sender_ip, self.port, name)
+            
+            # If this is an initial greeting (not a reply), send my identity back
+            if not is_reply:
+                reply_payload = {'id': self.node_id, 'name': self.display_name, 'is_reply': True}
+                self.send_to_peer(msg.sender_id, 'HELLO', payload=reply_payload)
+
+            # Standard discovery logic
             if not self.state.get_host() or self.state.is_host(msg.sender_id):
                 self.send_to_peer(msg.sender_id, 'REQUEST_STATE')
 

@@ -327,12 +327,12 @@ class PlaylistUI:
         if is_host:
             # Format: HOST mode | Peer: MyName [MyID] (You)
             # Since I am host, Host info is same as Peer info
-            role_text = f"[ HOST mode ] |  {my_identity} (You)"
+            role_text = f"** HOST mode ** |  {my_identity} (You)"
             fg_color = TEXT_HOST
         elif host_id:
             # Format: LISTENER mode | Peer: MyName [MyID] | Host: HostName [HostID]
             h_name = host_name if host_name else "Unknown"
-            role_text = f"[ LISTENER mode ] |  {my_identity} (You) |  HOST: {h_name} [{host_id}]"
+            role_text = f"** LISTENER mode ** |  {my_identity} (You) |  HOST: {h_name} [{host_id}]"
             fg_color = TEXT_HOST
         else:
             role_text = f"Finding Host...  |  {my_identity}"

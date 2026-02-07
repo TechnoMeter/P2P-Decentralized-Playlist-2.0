@@ -8,5 +8,5 @@ Yet to do
 // 4. Player UI (design and placeholder complete, implementation pending) - terminal debug selective copy full copy scroll fix, hide host elements for listerners, seekbar logic should only display song position not be modified manually)
 // 5. Play songs in different laptops and check (file import logic for multiple os)
 // 6. Handle songs being not avalable in other systems (simple dialog box of song not found in ui)
-7. if two users join under same name, they are considered as duplicate instances of same user and host privileges is being shared. check or discuss whether they should be handled with ID or this can be ignored. (hash with username password combo) (mask the id again for securit and display that alone) also election logic should be based on the double geenrated id and now the given name
+// 7. if two users join under same name, they are considered as duplicate instances of same user and host privileges is being shared. check or discuss whether they should be handled with ID or this can be ignored. (hash with username password combo) (mask the id again for securit and display that alone) also election logic should be based on the double geenrated id and now the given name
 8. song is only played on host, i want it to play on all devices so the purpose can also serve as a multiamplifier in a physocal setting
