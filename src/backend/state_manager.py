@@ -11,19 +11,26 @@ class StateManager:
         
         # Local state
         self.playlist: List[Song] = []
-        self.peers: Dict[str, Dict[str, Any]] = {} # node_id -> {ip, port, last_seen}
+        # peers: node_id -> {ip, port, status, display_name}
+        self.peers: Dict[str, Dict[str, Any]] = {} 
+        
+        # Playback State
+        self.current_song = None
+        self.current_song_pos = 0
+        self.is_playing = False
+        self.shuffle_active = False
+        
+        # Repeat Mode: 0 = Off, 1 = Repeat All, 2 = Repeat One
+        self.repeat_mode = 0 
         
         # Vector Clock: {node_id: counter}
         self.vector_clock: Dict[str, int] = {self.node_id: 0}
         
         # Message buffer for causal ordering
-        # Stores messages that arrived too early (waiting for dependencies)
         self.pending_messages: List[Message] = []
 
         self.uptime = 0
-        
         self.lock = threading.Lock()
-
         self.host_id = None
 
     def log(self, text):
@@ -61,12 +68,25 @@ class StateManager:
                     return False
         return True
 
-    def update_peer(self, node_id, ip, port):
+    def update_peer(self, node_id, ip, port, display_name=None):
         with self.lock:
-            self.peers[node_id] = {'ip': ip, 'port': port, 'status': 'alive'}
+            existing = self.peers.get(node_id, {})
+            existing['ip'] = ip
+            existing['port'] = port
+            if display_name:
+                existing['display_name'] = display_name
+                
+            self.peers[node_id] = existing
+            
             if node_id not in self.vector_clock:
                 self.vector_clock[node_id] = 0
-        self.log(f"Updated peer list: {self.peers}")
+        
+        name_str = f" ({display_name})" if display_name else ""
+        self.log(f"Updated peer: {node_id}{name_str}")
+
+    def get_peer_name(self, node_id):
+        with self.lock:
+            return self.peers.get(node_id, {}).get('display_name', 'Unknown')
 
     def add_song(self, song: Song):
         with self.lock:
@@ -93,5 +113,4 @@ class StateManager:
         
     def is_host(self, node_id):
         with self.lock:
-            self.log(f"Checking if {node_id} is host: {self.host_id}")
             return self.host_id == node_id
