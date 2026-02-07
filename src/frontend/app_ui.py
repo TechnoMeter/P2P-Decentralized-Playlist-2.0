@@ -307,7 +307,7 @@ class PlaylistUI:
             fg_color = TEXT_HOST
         elif host_id:
             h_name = host_name if host_name else "Unknown"
-            role_text = f"** LISTENER mode ** |  {my_identity} (You) |  HOST: {h_name} [{host_id}]"
+            role_text = f"** LISTENER mode ** |  {my_identity} (You) |  HOST: [{host_id}]"
             fg_color = TEXT_HOST
         else:
             role_text = f"Finding Host...  |  {my_identity}"

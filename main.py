@@ -7,6 +7,9 @@ background thread to handle heartbeats, UI updates, and playback logic.
 
 UPDATES:
 - Fixed Graphical Login: Now uses the primary window context to ensure visibility.
+- Patched compatibility with older backend nodes.
+- Removed unused battery metrics.
+- Fixed Listener Timer: Added PatchedNetworkNode and dead reckoning logic.
 """
 
 import sys
@@ -21,13 +24,6 @@ import hashlib
 import tkinter as tk
 from tkinter import messagebox
 
-# Check for psutil to handle battery-based metrics if available
-try:
-    import psutil
-    HAS_PSUTIL = True
-except ImportError:
-    HAS_PSUTIL = False
-
 from src.backend.discovery import DiscoveryManager
 from src.backend.network_node import NetworkNode
 from src.backend.state_manager import StateManager
@@ -37,6 +33,26 @@ from src.utils.config import TCP_PORT, HEARTBEAT_INTERVAL
 from src.frontend.app_ui import PlaylistUI
 from src.utils.models import Song
 from src.utils import config
+
+# --- PATCHED NETWORK CLASS ---
+class PatchedNetworkNode(NetworkNode):
+    """
+    Extends NetworkNode to handle message payloads that the original 
+    backend implementation ignores (specifically duration and play status).
+    """
+    def _handle_logic(self, msg):
+        # Allow base class to handle standard logic (pos, queue, etc.)
+        super()._handle_logic(msg)
+        
+        if msg.msg_type == 'PLAYBACK_SYNC':
+            # Patch: Extract duration and play state which base class ignores
+            dur = msg.payload.get('dur')
+            if dur is not None:
+                self.state.current_duration = dur
+            
+            # Sync playing state if provided
+            if 'is_playing' in msg.payload:
+                self.state.is_playing = msg.payload['is_playing']
 
 class CollaborativeNode:
     """
@@ -62,11 +78,23 @@ class CollaborativeNode:
         
         # Initialize State Management
         self.state = StateManager(self.node_id, self.ui_log)
+        
+        # --- COMPATIBILITY PATCH START ---
+        # Explicitly initialize state variables expected by the newer main.py
+        # because the older StateManager doesn't have them in __init__
         self.state.current_duration = 0 
+        self.state.current_song = None
+        self.state.current_song_pos = 0
+        self.state.is_playing = False
+        self.state.shuffle_active = False
+        self.state.repeat_mode = 0
+        # --- COMPATIBILITY PATCH END ---
+        
         self.history = [] 
         
         # Initialize Networking
-        self.network = NetworkNode(self.node_id, self.state, self.ui_log, display_name=self.display_name)
+        # Use PatchedNetworkNode to ensure duration/status syncs are processed
+        self.network = PatchedNetworkNode(self.node_id, self.state, self.ui_log)
         self.network.port = self.tcp_port
         
         # Initialize Election System (Bully Algorithm)
@@ -90,7 +118,6 @@ class CollaborativeNode:
         self.last_played_id = None
         self.local_is_paused = False
         self.running = True
-        self.simulated_battery = 100
         
         # Map UI buttons to Class Methods
         self.ui.on_skip_next = self.on_skip_next
@@ -370,9 +397,9 @@ class CollaborativeNode:
         if not hasattr(self, 'ui'): return
         is_host = self.election.is_host
         leader = self.state.get_host()
-        host_name = "Unknown"
-        if leader:
-            host_name = self.state.get_peer_name(leader)
+        
+        # PATCH: Use new safety method because older backend doesn't sync names
+        host_name = self.state.get_peer_name(leader) if leader else "Unknown"
             
         self.ui.set_controls_visible(is_host, host_id=leader, host_name=host_name)
         cp = self.state.current_song
@@ -404,14 +431,36 @@ class CollaborativeNode:
                         self.network.send_to_peer(pid, 'HEARTBEAT')
                         self.election.update_heartbeat()
 
-                    if self.audio.is_busy() or self.local_is_paused:
+                    if self.audio.is_busy():
                         # Update playback position while playing
                         current_pos = self.audio.get_current_pos()
                         self.state.current_song_pos = current_pos
-                        self._broadcast('PLAYBACK_SYNC', {'pos': current_pos, 'dur': getattr(self.state, 'current_duration', 0)})
+                        # Piggyback is_playing state for listeners
+                        payload = {
+                            'pos': current_pos, 
+                            'dur': getattr(self.state, 'current_duration', 0),
+                            'is_playing': self.state.is_playing
+                        }
+                        self._broadcast('PLAYBACK_SYNC', payload)
+                    elif self.local_is_paused:
+                        # If paused, broadcast last known position
+                        payload = {
+                            'pos': self.state.current_song_pos, 
+                            'dur': getattr(self.state, 'current_duration', 0),
+                            'is_playing': self.state.is_playing
+                        }
+                        self._broadcast('PLAYBACK_SYNC', payload)
                     else:
                         # Song finished, select next
                         self._process_auto_next_song()
+                else:
+                    # Listener Logic: Dead reckoning for smooth UI
+                    # If state says playing, increment local timer by the heartbeat interval
+                    if self.state.is_playing and self.state.current_duration > 0:
+                        self.state.current_song_pos += HEARTBEAT_INTERVAL
+                        # Clamp to duration
+                        if self.state.current_song_pos > self.state.current_duration:
+                            self.state.current_song_pos = self.state.current_duration
                     
                 self.election.check_for_host_failure()
                 time.sleep(HEARTBEAT_INTERVAL)
