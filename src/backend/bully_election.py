@@ -59,8 +59,8 @@ class ElectionManager:
 
     def on_election_received(self, sender_id, sender_uptime):
         # Use composite metric: primary = uptime, secondary = node ID
-        my_metric = (self.state.get_uptime(), self.node_id)
-        sender_metric = (sender_uptime, sender_id)
+        my_metric = (self.node_id, self.state.get_uptime() )
+        sender_metric = (sender_id, sender_uptime)
         self.log(f"Election received from {sender_id}. My metric: {my_metric}, Sender metric: {sender_metric}")
         if sender_metric < my_metric:
             self.network.send_to_peer(sender_id, 'ANSWER')
@@ -114,4 +114,4 @@ class ElectionManager:
         with self.lock:
             self.last_heartbeat = time.time()
             self.state.update_uptime(int(self.last_heartbeat - self.init_time))
-            self.log(f"Updated heartbeat. Uptime: {self.state.uptime} seconds")
+            #self.log(f"Updated heartbeat. Uptime: {self.state.uptime} seconds")

@@ -10,6 +10,8 @@ UPDATES:
 - Patched compatibility with older backend nodes.
 - Removed unused battery metrics.
 - Fixed Listener Timer: Added PatchedNetworkNode and dead reckoning logic.
+- Optimized: Removed redundant imports and fixed seek race condition.
+- Fixed Seekbar/Timer: Added offset tracking to account for Pygame's relative get_pos().
 """
 
 import sys
@@ -20,7 +22,6 @@ import socket
 import random
 import pygame
 import os
-import hashlib
 import tkinter as tk
 from tkinter import messagebox
 
@@ -32,7 +33,6 @@ from src.backend.audio_engine import AudioEngine
 from src.utils.config import TCP_PORT, HEARTBEAT_INTERVAL
 from src.frontend.app_ui import PlaylistUI
 from src.utils.models import Song
-from src.utils import config
 
 # --- PATCHED NETWORK CLASS ---
 class PatchedNetworkNode(NetworkNode):
@@ -118,6 +118,8 @@ class CollaborativeNode:
         self.last_played_id = None
         self.local_is_paused = False
         self.running = True
+        self.is_seeking = False # Flag to prevent race condition during seek
+        self.current_offset = 0.0 # Track playback offset for accurate timing
         
         # Map UI buttons to Class Methods
         self.ui.on_skip_next = self.on_skip_next
@@ -191,6 +193,7 @@ class CollaborativeNode:
         # Restart song if played > 5 seconds
         if self.state.current_song_pos > 5.0:
             self.audio.seek(0, resolved_path)
+            self.current_offset = 0.0 # Reset offset on restart
             self.state.current_song_pos = 0
             self._broadcast('PLAYBACK_SYNC', {'pos': 0, 'dur': getattr(self.state, 'current_duration', 0)})
             return
@@ -206,6 +209,7 @@ class CollaborativeNode:
             self._play_song_logic(prev_song)
         else:
              self.audio.seek(0, resolved_path)
+             self.current_offset = 0.0 # Reset offset
              self.state.current_song_pos = 0
              self._broadcast('PLAYBACK_SYNC', {'pos': 0, 'dur': getattr(self.state, 'current_duration', 0)})
 
@@ -238,13 +242,18 @@ class CollaborativeNode:
             seek_sec = (float(value) / 100.0) * dur
             resolved_path = self._resolve_path(self.state.current_song.file_path)
             
+            # Prevent maintenance loop from skipping song while seeking
+            self.is_seeking = True
             self.audio.seek(seek_sec, resolved_path)
+            self.current_offset = seek_sec # Update offset to new position
             self.state.current_song_pos = seek_sec
             
             # Maintain pause state if applicable
             if self.local_is_paused:
                 self.audio.toggle_pause() 
                 self.local_is_paused = True
+            
+            self.is_seeking = False
             
             self._broadcast('PLAYBACK_SYNC', {'pos': seek_sec, 'dur': dur})
             
@@ -359,6 +368,7 @@ class CollaborativeNode:
                 return
             
         if self.audio.play_song(resolved_path, start_time=start_offset):
+            self.current_offset = start_offset # Initialize offset
             self.local_is_paused = False 
             self.last_played_id = song.id
             self.state.current_duration = self._get_duration(resolved_path)
@@ -433,7 +443,8 @@ class CollaborativeNode:
 
                     if self.audio.is_busy():
                         # Update playback position while playing
-                        current_pos = self.audio.get_current_pos()
+                        # Pygame's get_pos() returns time since play() started, so we must add the offset
+                        current_pos = self.audio.get_current_pos() + self.current_offset
                         self.state.current_song_pos = current_pos
                         # Piggyback is_playing state for listeners
                         payload = {
@@ -452,7 +463,9 @@ class CollaborativeNode:
                         self._broadcast('PLAYBACK_SYNC', payload)
                     else:
                         # Song finished, select next
-                        self._process_auto_next_song()
+                        # FIX: Check if we are currently seeking to prevent race condition
+                        if not self.is_seeking:
+                            self._process_auto_next_song()
                 else:
                     # Listener Logic: Dead reckoning for smooth UI
                     # If state says playing, increment local timer by the heartbeat interval

@@ -7,17 +7,8 @@ BUFFER_SIZE = 8192       # Standard buffer for object serialization
 
 # Timing Constants (Seconds) - Optimized for faster failover
 HEARTBEAT_INTERVAL = 1.0 
-HOST_TIMEOUT = 3.1       # Miss ~3 heartbeats = Host Failure (Reduced from 6s)
-ELECTION_TIMEOUT = 3.0   
-
-# UI Theme (Lucrative Colors)
-THEME = {
-    "bg": "#121212",      # Deep dark background
-    "primary": "#1DB954", # Spotify Green
-    "secondary": "#212121",
-    "text": "#FFFFFF",
-    "accent": "#535353"
-}
+HOST_TIMEOUT = 6.0     # Time to wait before declaring host down
+ELECTION_TIMEOUT = 3.0
 
 def get_local_ip():
     """Dynamically finds the local IP on the LAN."""
