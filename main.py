@@ -4,6 +4,9 @@ MAIN ENTRY POINT
 Orchestrates the entire application. It initializes the UI, Network,
 State Manager, and Election systems. It runs a maintenance loop on a 
 background thread to handle heartbeats, UI updates, and playback logic.
+
+UPDATES:
+- Fixed Graphical Login: Now uses the primary window context to ensure visibility.
 """
 
 import sys
@@ -15,6 +18,8 @@ import random
 import pygame
 import os
 import hashlib
+import tkinter as tk
+from tkinter import messagebox
 
 # Check for psutil to handle battery-based metrics if available
 try:
@@ -42,7 +47,6 @@ class CollaborativeNode:
     def __init__(self, display_name=None, password=None):
         if not display_name or not password:
             print("ERROR: Name and Password are required.")
-            print("Usage: python main.py [Name] [Password]")
             sys.exit(1)
 
         # Generate a deterministic Node ID based on the user's credentials
@@ -456,8 +460,79 @@ class CollaborativeNode:
             self.network.connect_to_peer(pid, ip, port)
 
 if __name__ == "__main__":
-    name = sys.argv[1] if len(sys.argv) > 1 else None
-    pwd = sys.argv[2] if len(sys.argv) > 2 else None
+    name = None
+    pwd = None
     
-    node = CollaborativeNode(name, pwd)
-    node.start()
+    # Check command line args first (Backward compatibility)
+    if len(sys.argv) > 2:
+        name = sys.argv[1]
+        pwd = sys.argv[2]
+    else:
+        # Launch Graphical Input Dialog using ROOT window
+        # (Avoids 'withdraw' + 'toplevel' issues on some systems)
+        login_root = tk.Tk()
+        login_root.title("P2P Login")
+        login_root.geometry("350x250")
+        
+        # Center Dialog
+        screen_width = login_root.winfo_screenwidth()
+        screen_height = login_root.winfo_screenheight()
+        x = (screen_width - 350) // 2
+        y = (screen_height - 250) // 2
+        login_root.geometry(f"350x250+{x}+{y}")
+        login_root.resizable(False, False)
+
+        # Theme Colors
+        BG_COLOR = "#051024"
+        ACCENT_COLOR = "#00FF99"
+        TEXT_COLOR = "#FFFFFF"
+        ENTRY_BG = "#111111"
+        
+        login_root.configure(bg=BG_COLOR)
+
+        # UI Components
+        tk.Label(login_root, text="P2P PLAYLIST", font=("Segoe UI", 16, "bold"), bg=BG_COLOR, fg=ACCENT_COLOR).pack(pady=(20, 10))
+
+        tk.Label(login_root, text="Display Name:", font=("Segoe UI", 10), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", padx=40)
+        entry_name = tk.Entry(login_root, bg=ENTRY_BG, fg=TEXT_COLOR, insertbackground=TEXT_COLOR, relief="flat", font=("Segoe UI", 10))
+        entry_name.pack(fill="x", padx=40, pady=(0, 10), ipady=3)
+        entry_name.focus_set()
+
+        tk.Label(login_root, text="Network Password:", font=("Segoe UI", 10), bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", padx=40)
+        entry_pwd = tk.Entry(login_root, show="*", bg=ENTRY_BG, fg=TEXT_COLOR, insertbackground=TEXT_COLOR, relief="flat", font=("Segoe UI", 10))
+        entry_pwd.pack(fill="x", padx=40, pady=(0, 20), ipady=3)
+
+        user_credentials = {"name": None, "pwd": None}
+
+        def on_submit(event=None):
+            n = entry_name.get().strip()
+            p = entry_pwd.get().strip()
+            if not n or not p:
+                messagebox.showerror("Error", "Please enter both Name and Password.", parent=login_root)
+                return
+            user_credentials["name"] = n
+            user_credentials["pwd"] = p
+            login_root.destroy()
+
+        def on_close():
+            login_root.destroy()
+            sys.exit(0)
+
+        btn_submit = tk.Button(login_root, text="JOIN NETWORK", command=on_submit, bg=ACCENT_COLOR, fg="black", font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2")
+        btn_submit.pack(fill="x", padx=40, ipady=5)
+
+        login_root.bind('<Return>', on_submit)
+        login_root.protocol("WM_DELETE_WINDOW", on_close)
+        
+        # Start the Login UI loop
+        login_root.mainloop()
+
+        name = user_credentials.get("name")
+        pwd = user_credentials.get("pwd")
+
+    if name and pwd:
+        # Launch Main Application
+        node = CollaborativeNode(name, pwd)
+        node.start()
+    else:
+        sys.exit(0)
