@@ -67,6 +67,13 @@ class StateManager:
             if node_id not in self.vector_clock:
                 self.vector_clock[node_id] = 0
         self.log(f"Updated peer list: {self.peers}")
+    
+    def get_peer_name(self, node_id):
+        """
+        Backwards compatibility method.
+        Since older NetworkNodes don't exchange names, we return the node ID.
+        """
+        return f"Node {node_id}"
 
     def add_song(self, song: Song):
         with self.lock:

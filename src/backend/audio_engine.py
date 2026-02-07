@@ -62,3 +62,25 @@ class AudioEngine:
     def stop(self):
         pygame.mixer.music.stop()
         self.is_playing = False
+
+    def toggle_pause(self):
+        """
+        Toggles playback state.
+        Returns: True if paused, False if playing.
+        """
+        if self.is_playing:
+            pygame.mixer.music.pause()
+            self.is_playing = False
+            return True
+        else:
+            pygame.mixer.music.unpause()
+            self.is_playing = True
+            return False
+
+    def seek(self, time_sec, file_path):
+        """
+        Simulates seeking by stopping and restarting the track at the specific offset.
+        Required because pygame.mixer.music.set_pos() is unreliable for many formats.
+        """
+        self.stop()
+        self.play_song(file_path, start_time=time_sec)
