@@ -319,22 +319,26 @@ class PlaylistUI:
         # 1. Update Header Info
         current_title = self.root.title()
         try:
-             my_name = current_title.split(' - ')[1]
+             # Title is "P2P Playlist - Name [ID]" -> Extract "Name [ID]"
+             my_identity = current_title.split(' - ')[1]
         except:
-             my_name = self.node_id
+             my_identity = f"Unknown [{self.node_id}]"
 
         if is_host:
-            role_text = f"HOST (You: {my_name})"
+            # Format: HOST mode | Peer: MyName [MyID] (You)
+            # Since I am host, Host info is same as Peer info
+            role_text = f"[ HOST mode ] |  {my_identity} (You)"
             fg_color = TEXT_HOST
         elif host_id:
+            # Format: LISTENER mode | Peer: MyName [MyID] | Host: HostName [HostID]
             h_name = host_name if host_name else "Unknown"
-            role_text = f"LISTENER ({h_name}:{host_id})"
+            role_text = f"[ LISTENER mode ] |  {my_identity}  |  HOST: {h_name} [{host_id}]"
             fg_color = TEXT_HOST
         else:
-            role_text = "Finding Host..."
+            role_text = f"Finding Host...  |  {my_identity}"
             fg_color = ACCENT_WARNING
             
-        font = ("Segoe UI", 9, "bold") if (is_host or host_id) else FONT_SMALL
+        font = ("Segoe UI", 9, "bold") 
         self.status_label.config(text=role_text, fg=fg_color, font=font)
 
         # 2. Check for Role Change (Prevents Glitching)
@@ -465,12 +469,9 @@ class PlaylistUI:
         current_items = self.tree.get_children()
         checked_ids = set()
         
-        # Map current check states using song ID
         for item_id in current_items:
             vals = self.tree.item(item_id, "values")
-            # If item is checked
             if vals and vals[0] == "☑":
-                 # Retrieve ID from our map
                  sid = self.tree_map.get(item_id)
                  if sid: checked_ids.add(sid)
         
@@ -480,9 +481,7 @@ class PlaylistUI:
 
         # 3. Rebuild
         for song in songs:
-            # Restore check if ID was checked
             check_mark = "☑" if song.id in checked_ids else "☐"
-            
             tags = ("playing",) if current_song_id == song.id else ()
             
             iid = self.tree.insert("", "end", values=(check_mark, song.title, song.artist, song.added_by), tags=tags)

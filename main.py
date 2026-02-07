@@ -330,23 +330,31 @@ class CollaborativeNode:
         # Resolve path for cross-OS compatibility
         resolved_path = self._resolve_path(song.file_path)
         
+        # Check if file exists locally before trying to play
         if not os.path.exists(resolved_path):
             self.ui_log(f"Error: File missing locally: {resolved_path}")
+            
+            # Show visible notification in UI
             self.ui.show_notification(f"Missing File: {song.title}", is_error=True)
+            
+            # If Host, automatically skip to next song
             if self.election.is_host:
                 self.ui_log("Host missing file. Skipping to next...")
-                self.last_played_id = song.id 
+                self.last_played_id = song.id # Mark as "played" so we don't loop on it
+                
                 if len(self.state.playlist) > 0:
+                    # Recursive call to try next song
                     next_song = self.state.playlist.pop(0)
                     self.state.current_song = next_song
                     self.state.current_song_pos = 0
                     self._play_song_logic(next_song)
                 else:
+                    # No more songs, stop playback
                     self.state.current_song = None 
-                    self.state.current_duration = 0 # Reset duration
+                    self.state.current_duration = 0 
                     self.state.current_song_pos = 0
                     
-                    # RESET Play State Here
+                    # Reset Play State
                     self.state.is_playing = False
                     self.local_is_paused = False
                     self.ui.update_play_pause_icon(False)
@@ -358,6 +366,7 @@ class CollaborativeNode:
                     self.ui_log("Queue ended (last song missing).")
                 return
             
+        # If file exists, proceed with playback
         if self.audio.play_song(resolved_path, start_time=start_offset):
             self.local_is_paused = False 
             self.last_played_id = song.id
