@@ -285,21 +285,39 @@ class CollaborativeNode:
 
     def _resolve_path(self, file_path):
         """
-        Smart path resolution. Since peers might be on different OSs (Windows vs Linux)
-        or have files in different absolute paths, this attempts to find the file
-        by checking filename and common subfolders.
+        Robust path resolution handling:
+        1. Cross-platform separators (Windows \ vs Unix /)
+        2. Relative paths (music/, assets/, songs/)
+        3. Case-insensitivity (Song.mp3 vs song.mp3) to support cross-OS sync.
         """
         if not file_path: return ""
-        if os.path.exists(file_path): return file_path
-            
-        normalized_path = file_path.replace('\\', '/')
-        filename = os.path.basename(normalized_path)
         
-        if os.path.exists(filename): return filename
+        # 1. Exact match (Absolute path or relative to CWD)
+        if os.path.exists(file_path): 
+            return file_path
             
-        for sub in ['assets', 'music', 'songs']:
-            potential = os.path.join(sub, filename)
-            if os.path.exists(potential): return potential
+        # 2. Extract clean filename
+        # Handles mixed separators from different OSs
+        normalized_name = file_path.replace('\\', '/').split('/')[-1]
+        
+        # 3. Define directories to search
+        search_dirs = ['.', 'music', 'songs', 'assets']
+        
+        for d in search_dirs:
+            # A. Check exact match in directory
+            candidate = os.path.join(d, normalized_name)
+            if os.path.exists(candidate):
+                return os.path.abspath(candidate)
+                
+            # B. Check case-insensitive match 
+            # (Fixes issues where Windows sends "Song.mp3" but Mac has "song.mp3")
+            if os.path.exists(d):
+                try:
+                    for f in os.listdir(d):
+                        if f.lower() == normalized_name.lower():
+                            return os.path.abspath(os.path.join(d, f))
+                except OSError:
+                    pass
             
         return file_path
 
