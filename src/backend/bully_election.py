@@ -42,10 +42,6 @@ class ElectionManager:
         to all peers with a higher Node ID to challenge them.
         """
         # Skip election if host already exists and is connected
-        current_host = self.state.get_host()
-        if current_host and current_host in self.network.connections:
-            self.log(f"Host {current_host} already exists. Skipping election.")
-            return
 
         with self.lock:
             self.leader_id = self.state.get_host()
