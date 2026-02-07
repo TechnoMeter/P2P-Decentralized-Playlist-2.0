@@ -1,22 +1,24 @@
+"""
+UI IMPLEMENTATION (TKINTER)
+---------------------------
+Implements the visual interface inspired by Frutiger Aero / Vista aesthetics.
+Handles user inputs, displays the playlist tree, handles the debug terminal,
+and switches layouts between Host Mode (controls visible) and Listener Mode.
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import queue
 from src.frontend.styles import *
 
 class PlaylistUI:
-    """
-    Frutiger Aero / Vista inspired UI implementation.
-    Features a pinned bottom player skin (Deep Blue), checkbox-based selection,
-    and aero-styled management buttons.
-    """
-    
     def __init__(self, window_title, on_add_song_callback):
         self.root = tk.Tk()
         self.root.title(f"P2P Playlist - {window_title}")
         self.root.geometry("850x650")
         self.root.configure(bg=BG_MAIN)
         
-        # Callbacks
+        # Event Callbacks (Set by controller)
         self.on_add_song = on_add_song_callback
         self.on_skip_next = None
         self.on_skip_prev = None
@@ -28,12 +30,13 @@ class PlaylistUI:
         self.on_remove_song = None
         self.on_volume_change = None
         
+        # Thread-safe logging queue
         self.msg_queue = queue.Queue()
-        self.controls_visible = None # Force initial layout update
+        
+        # UI State Flags
+        self.controls_visible = None 
         self.debug_visible = False
         self.is_dragging_seek = False 
-        
-        # Internal map to store song IDs for Treeview items: {iid: song_id}
         self.tree_map = {} 
         
         self._setup_styles()
@@ -41,11 +44,11 @@ class PlaylistUI:
         self._start_queue_listener()
 
     def _setup_styles(self):
-        """Configures ttk styles for a glossy/aero look."""
+        """Configures the ttk visual styles."""
         style = ttk.Style()
         style.theme_use('clam') 
         
-        # Treeview (Playlist)
+        # Treeview (Playlist List)
         style.configure("Treeview", 
                         background=BG_MAIN, 
                         foreground=TEXT_MAIN, 
@@ -64,7 +67,7 @@ class PlaylistUI:
                   background=[('selected', '#333333')], 
                   foreground=[('selected', 'white')])
         
-        # Slider
+        # Seek Slider
         style.configure("Horizontal.TScale", 
                         background=BG_PLAYER, 
                         troughcolor="#002244", 
@@ -79,7 +82,8 @@ class PlaylistUI:
                   background=[('disabled', BG_PLAYER)])
 
     def _setup_layout(self):
-        # --- 1. Header (Top Bar) ---
+        """Builds the main window structure."""
+        # --- 1. Header ---
         self.header = tk.Frame(self.root, bg=BG_HEADER, height=50, bd=1, relief="raised")
         self.header.pack(side="top", fill="x")
         
@@ -88,10 +92,9 @@ class PlaylistUI:
         self.status_label = tk.Label(self.header, text="Connecting...", bg=BG_HEADER, fg=TEXT_SUB, font=FONT_SMALL)
         self.status_label.pack(side="left", padx=PAD_M)
         
-        # Notification Label (Initially Hidden)
         self.notify_label = tk.Label(self.header, text="", bg=ACCENT_DANGER, fg="white", font=("Segoe UI", 9, "bold"), padx=10)
         
-        # Updated CMD Button Style to match Add Track
+        # Top Buttons
         self.debug_btn = tk.Button(self.header, text="CMD 💻", bg=ACCENT, fg="#000000",
                                  font=("Segoe UI", 9, "bold"), relief="raised", bd=2, padx=15,
                                  activebackground=ACCENT_HOVER, activeforeground="#000000",
@@ -104,28 +107,24 @@ class PlaylistUI:
                            command=self._add_song_dialog)
         add_btn.pack(side="right", padx=PAD_M, pady=PAD_M)
 
-        # --- 2. Pinned Player Skin (Bottom) ---
+        # --- 2. Bottom Player Skin ---
         self.player_frame = tk.Frame(self.root, bg=BG_PLAYER, bd=0)
         self.player_frame.pack(side="bottom", fill="x")
-        
         tk.Frame(self.player_frame, bg=ACCENT, height=2).pack(side="top", fill="x")
-        
         self._setup_player_ui()
 
-        # --- 3. Main Content Container ---
+        # --- 3. Middle Content ---
         self.middle_container = tk.Frame(self.root, bg=BG_MAIN)
         self.middle_container.pack(side="top", fill="both", expand=True)
 
-        # Playlist Panel
         self.playlist_panel = tk.Frame(self.middle_container, bg=BG_MAIN)
         self.playlist_panel.pack(side="left", fill="both", expand=True, padx=PAD_M, pady=PAD_M)
         
         list_header = tk.Frame(self.playlist_panel, bg=BG_MAIN)
         list_header.pack(fill="x", pady=(0, 5))
-        
         tk.Label(list_header, text="Current Queue", bg=BG_MAIN, fg=TEXT_MAIN, font=FONT_TITLE).pack(side="left")
 
-        # Treeview with Checkbox Column
+        # Playlist Treeview
         columns = ("select", "title", "artist", "added_by")
         self.tree = ttk.Treeview(self.playlist_panel, columns=columns, show="headings", selectmode="browse")
         
@@ -145,8 +144,7 @@ class PlaylistUI:
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
 
-        # --- 4. Aero Toolbar (Bottom of Playlist) ---
-        # We'll create it but manage packing in set_controls_visible
+        # --- 4. Toolbar ---
         self.toolbar_frame = tk.Frame(self.playlist_panel, bg=BG_MAIN, height=50)
         
         self.btn_style = {"font": ("Segoe UI", 9, "bold"), "relief": "raised", "bd": 2, "padx": 15, "pady": 5, "activebackground": ACCENT_HOVER}
@@ -159,24 +157,14 @@ class PlaylistUI:
                                       state="disabled", command=lambda: self._trigger(self.on_clear_queue), **self.btn_style)
         self.btn_clear_list.pack(side="left")
 
-        # --- Debug Panel ---
+        # --- Debug Panel (Hidden by default) ---
         self.debug_panel = tk.Frame(self.middle_container, bg=BG_TERM, width=300, bd=2, relief="sunken")
         
         term_header = tk.Frame(self.debug_panel, bg=BG_TERM)
         term_header.pack(fill="x", pady=2, padx=2)
         tk.Label(term_header, text="SYSTEM TERMINAL", bg=BG_TERM, fg=TEXT_TERM, font=("Consolas", 10, "bold")).pack(side="left")
         
-        # Updated Copy Button Styles to match "Add Track"
-        copy_opts = {
-            "bg": ACCENT, 
-            "fg": "#000000", 
-            "relief": "raised", 
-            "bd": 1,
-            "font": ("Segoe UI", 8, "bold"), 
-            "padx": 10, 
-            "pady": 0,
-            "activebackground": ACCENT_HOVER
-        }
+        copy_opts = {"bg": ACCENT, "fg": "#000000", "relief": "raised", "bd": 1, "font": ("Segoe UI", 8, "bold"), "padx": 10, "pady": 0, "activebackground": ACCENT_HOVER}
         tk.Button(term_header, text="Copy All", command=self._copy_all_logs, **copy_opts).pack(side="right", padx=2)
         tk.Button(term_header, text="Copy Sel", command=self._copy_selection_logs, **copy_opts).pack(side="right", padx=2)
 
@@ -187,11 +175,11 @@ class PlaylistUI:
         self.log_box = tk.Text(log_frame, bg=BG_TERM, fg=TEXT_TERM, font=FONT_MONO, borderwidth=0, state="disabled", 
                                yscrollcommand=term_scrollbar.set, selectbackground="#333333", selectforeground="white")
         term_scrollbar.config(command=self.log_box.yview)
-        
         term_scrollbar.pack(side="right", fill="y")
         self.log_box.pack(side="left", fill="both", expand=True)
 
     def _setup_player_ui(self):
+        """Constructs the bottom player controls."""
         # A. Seek Bar Row
         self.seek_frame = tk.Frame(self.player_frame, bg=BG_PLAYER, pady=5)
         self.seek_frame.pack(fill="x", padx=PAD_L)
@@ -208,7 +196,6 @@ class PlaylistUI:
         self.lbl_total_time.pack(side="right")
 
         # B. Controls Row
-        # Store as self.controls_frame to allow manipulation
         self.controls_frame = tk.Frame(self.player_frame, bg=BG_PLAYER, pady=10)
         self.controls_frame.pack(fill="x", padx=PAD_L, pady=(0, 10))
 
@@ -248,20 +235,13 @@ class PlaylistUI:
         self.vol_slider.set(70)
         self.vol_slider.pack(side="left", padx=5)
 
-    # --- Notification System ---
-    
     def show_notification(self, message, is_error=True):
-        """Displays a temporary banner in the header for errors/status."""
         bg_color = ACCENT_DANGER if is_error else ACCENT
         self.notify_label.config(text=message, bg=bg_color)
-        # Pack after status label
         self.notify_label.pack(side="left", padx=PAD_M, after=self.status_label)
-        
-        # Auto-hide after 3 seconds
         self.root.after(3000, self.notify_label.pack_forget)
 
     # --- Interaction Logic ---
-    
     def _on_seek_start(self, event):
         self.is_dragging_seek = True
         
@@ -272,10 +252,11 @@ class PlaylistUI:
             self.on_seek(float(val))
 
     def _on_tree_click(self, event):
+        """Handles click on the checkbox column of the playlist."""
         region = self.tree.identify_region(event.x, event.y)
         if region == "cell":
             col = self.tree.identify_column(event.x)
-            if col == "#1":
+            if col == "#1": # Checkbox column
                 item_id = self.tree.identify_row(event.y)
                 if item_id:
                     current_values = self.tree.item(item_id, "values")
@@ -293,10 +274,10 @@ class PlaylistUI:
                 has_checked = True
                 break
         
-        if has_checked:
-            self.remove_btn.config(state="normal", bg=ACCENT, fg="#000000")
-        else:
-            self.remove_btn.config(state="disabled", bg=BTN_DISABLED_BG, fg=TEXT_DISABLED)
+        state = "normal" if has_checked else "disabled"
+        bg = ACCENT if has_checked else BTN_DISABLED_BG
+        fg = "#000000" if has_checked else TEXT_DISABLED
+        self.remove_btn.config(state=state, bg=bg, fg=fg)
 
     def _handle_remove_checked(self):
         if not self.on_remove_song: return
@@ -305,32 +286,26 @@ class PlaylistUI:
             val = self.tree.item(child, "values")
             if val[0] == "☑":
                 song_id = self.tree_map.get(child)
-                if song_id:
-                     items_to_remove.append(song_id)
+                if song_id: items_to_remove.append(song_id)
         
-        # Call remove for each ID (Backend expects ID)
         for song_id in items_to_remove:
             self.on_remove_song(song_id)
         
-        # Manually reset UI state to avoid visual lag before sync
         self.remove_btn.config(state="disabled", bg=BTN_DISABLED_BG, fg=TEXT_DISABLED)
 
     def set_controls_visible(self, is_host, host_id=None, host_name=None):
-        # 1. Update Header Info
+        """Switches layout between Host (Controls) and Listener (Info Only)."""
+        # Update Header Text
         current_title = self.root.title()
         try:
-             # Title is "P2P Playlist - Name [ID]" -> Extract "Name [ID]"
              my_identity = current_title.split(' - ')[1]
         except:
              my_identity = f"Unknown [{self.node_id}]"
 
         if is_host:
-            # Format: HOST mode | Peer: MyName [MyID] (You)
-            # Since I am host, Host info is same as Peer info
             role_text = f"** HOST mode ** |  {my_identity} (You)"
             fg_color = TEXT_HOST
         elif host_id:
-            # Format: LISTENER mode | Peer: MyName [MyID] | Host: HostName [HostID]
             h_name = host_name if host_name else "Unknown"
             role_text = f"** LISTENER mode ** |  {my_identity} (You) |  HOST: {h_name} [{host_id}]"
             fg_color = TEXT_HOST
@@ -338,54 +313,41 @@ class PlaylistUI:
             role_text = f"Finding Host...  |  {my_identity}"
             fg_color = ACCENT_WARNING
             
-        font = ("Segoe UI", 9, "bold") 
-        self.status_label.config(text=role_text, fg=fg_color, font=font)
+        self.status_label.config(text=role_text, fg=fg_color, font=("Segoe UI", 9, "bold"))
 
-        # 2. Check for Role Change (Prevents Glitching)
         if self.controls_visible == is_host:
             return 
-        
         self.controls_visible = is_host
         
-        # 3. Update Layout
         if is_host:
-            # --- HOST MODE ---
-            # Remove all from packing to re-order cleanly
+            # --- HOST MODE LAYOUT ---
             self.info_sub.pack_forget()
             self.host_controls.pack_forget()
             self.vol_frame.pack_forget()
-            self.toolbar_frame.pack_forget() # Temporarily remove toolbar
+            self.toolbar_frame.pack_forget() 
 
-            # 1. Info (Left)
+            # Left Aligned Info
             self.info_sub.config(width=220)
             self.info_sub.pack_propagate(False)
             self.info_sub.pack(side="left", fill="y")
-            
             self.now_playing_title.config(anchor="w", justify="left", font=("Segoe UI", 11, "bold"))
             self.now_playing_artist.config(anchor="w", justify="left")
             self.now_playing_title.pack(side="top", fill="x")
             self.now_playing_artist.pack(side="top", fill="x")
 
-            # 2. Controls (Left, Expand)
             self.host_controls.pack(side="left", expand=True)
-            
-            # 3. Volume (Right)
             self.vol_frame.pack(side="right")
-
-            # 4. Restore Toolbar buttons
             self.toolbar_frame.pack(fill="x", pady=10) 
             self.btn_clear_list.pack(side="left")
             self.remove_btn.pack(side="left", padx=(0, 10))
 
-            # Restore Sliders
             if not self.seek_slider.winfo_ismapped():
                 self.seek_slider.pack(side="left", fill="x", expand=True, padx=PAD_M)
             
-            # Reset font size for small seekbar labels
             self.lbl_current_time.config(font=FONT_SMALL)
             self.lbl_total_time.config(font=FONT_SMALL)
 
-            # Enable Interactions
+            # Enable Inputs
             for widget in self.host_controls.winfo_children():
                 widget.configure(state="normal")
             self.btn_clear_list.configure(state="normal")
@@ -394,20 +356,17 @@ class PlaylistUI:
             self.vol_slider.configure(state="normal")
 
         else:
-            # --- LISTENER MODE ---
-            # Hide Toolbar completely
+            # --- LISTENER MODE LAYOUT ---
             self.btn_clear_list.pack_forget()
             self.remove_btn.pack_forget()
             self.toolbar_frame.pack_forget() 
-            
-            # Hide Controls & Sliders
             self.host_controls.pack_forget()
             self.seek_slider.pack_forget()
             self.vol_frame.pack_forget()
             
-            # Center the Song Info beautifully
+            # Centered Info
             self.info_sub.pack_forget() 
-            self.info_sub.config(width=0) # Unset fixed width
+            self.info_sub.config(width=0)
             self.info_sub.pack(side="top", fill="both", expand=True) 
             self.info_sub.pack_propagate(True) 
             
@@ -416,12 +375,9 @@ class PlaylistUI:
             self.now_playing_title.pack(side="top", fill="both", expand=True)
             self.now_playing_artist.pack(side="top", fill="both", expand=True)
             
-            # Bigger Timer
             self.lbl_current_time.config(font=("Segoe UI", 12, "bold"))
             self.lbl_total_time.config(font=("Segoe UI", 12, "bold"))
 
-    # --- UI Update Methods ---
-    
     def update_play_pause_icon(self, is_playing):
         icon = "⏸" if is_playing else "▶"
         self.btn_play.config(text=icon)
@@ -431,7 +387,6 @@ class PlaylistUI:
             m, s = divmod(int(s), 60)
             return f"{m}:{s:02d}"
 
-        # FIX: Explicitly check for 0 total seconds or extremely small duration
         if total_seconds <= 0.1:
              time_str_cur = "0:00"
              time_str_tot = "0:00"
@@ -448,6 +403,7 @@ class PlaylistUI:
             self.seek_slider.set(pct)
 
     def update_toggles(self, repeat_mode, is_shuffle):
+        # Update Repeat Icon State
         if repeat_mode == 0:
             self.btn_repeat.config(bg=BG_PLAYER, relief="flat", text="🔁")
         elif repeat_mode == 1:
@@ -455,6 +411,7 @@ class PlaylistUI:
         else:
             self.btn_repeat.config(bg=BTN_ACTIVE_BG, relief="sunken", text="🔂") 
 
+        # Update Shuffle Icon State
         if is_shuffle:
             self.btn_shuffle.config(bg=BTN_ACTIVE_BG, relief="sunken")
         else:
@@ -465,7 +422,7 @@ class PlaylistUI:
         self.now_playing_artist.config(text=artist)
 
     def update_playlist(self, songs, current_song_id=None):
-        # 1. Capture Checkbox State
+        # Preserve Checked State during update
         current_items = self.tree.get_children()
         checked_ids = set()
         
@@ -475,17 +432,15 @@ class PlaylistUI:
                  sid = self.tree_map.get(item_id)
                  if sid: checked_ids.add(sid)
         
-        # 2. Clear
         self.tree.delete(*self.tree.get_children())
         self.tree_map.clear()
 
-        # 3. Rebuild
         for song in songs:
             check_mark = "☑" if song.id in checked_ids else "☐"
             tags = ("playing",) if current_song_id == song.id else ()
             
             iid = self.tree.insert("", "end", values=(check_mark, song.title, song.artist, song.added_by), tags=tags)
-            self.tree_map[iid] = song.id # Store ID map
+            self.tree_map[iid] = song.id 
             
         self.tree.tag_configure("playing", foreground=ACCENT, font=("Segoe UI", 10, "bold"))
         self._check_selection_state()
@@ -520,24 +475,23 @@ class PlaylistUI:
             pass 
 
     def toggle_debug(self):
+        """Expands/Collapses the side debug panel."""
         if self.debug_visible:
             self.debug_panel.pack_forget()
             self.root.geometry("850x650")
-            # FIX: Ensure button retains accent style when reverting
             self.debug_btn.config(relief="raised", bg=ACCENT, fg="#000000")
         else:
             self.debug_panel.pack(side="right", fill="both", padx=(0, 0), pady=0)
             self.root.geometry("1150x650") 
-            # FIX: Active/Pressed state visual feedback
             self.debug_btn.config(relief="sunken", bg=ACCENT_HOVER, fg="#000000")
             self.log_box.see("end")
         self.debug_visible = not self.debug_visible
 
     def _start_queue_listener(self):
+        """Polls the message queue to update the debug terminal from the main thread."""
         try:
             while True:
                 msg = self.msg_queue.get_nowait()
-                # Check scroll BEFORE inserting
                 should_scroll = self.log_box.yview()[1] == 1.0
                 
                 self.log_box.config(state="normal")

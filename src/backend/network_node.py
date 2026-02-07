@@ -1,19 +1,24 @@
+"""
+NETWORK NODE (TCP)
+------------------
+Handles the persistent TCP connections between peers.
+Responsibilities:
+1. Managing socket connections.
+2. Sending/Receiving pickled message objects.
+3. Routing incoming messages to State, Election, or Audio logic.
+4. Implementing Causal Ordering (via StateManager validation).
+"""
+
 import socket
 import threading
 import pickle
 import struct
 import time
 from typing import Dict
-from src.utils.config import TCP_PORT, BUFFER_SIZE
+from src.utils.config import TCP_PORT
 from src.utils.models import Message
 
 class NetworkNode:
-    """
-    The communication backbone of the decentralized playlist.
-    Handles TCP connections, message routing, causal ordering via Vector Clocks,
-    and coordinates between discovery, election, and audio subsystems.
-    """
-    
     def __init__(self, node_id, state_manager, logger_callback=None, display_name="Unknown"):
         self.node_id = str(node_id) 
         self.state = state_manager
@@ -21,16 +26,15 @@ class NetworkNode:
         self.display_name = display_name
         self.running = True
         
-        # This port is dynamically assigned by CollaborativeNode in main.py
         self.port = TCP_PORT 
         
-        # Subsystem references (populated by main.py)
+        # Subsystems (injected later)
         self.election = None
         self.audio = None 
         
         self.connections: Dict[str, socket.socket] = {}
         
-        # Resolve local IP address
+        # Determine Local IP
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -40,10 +44,10 @@ class NetworkNode:
             self.ip = socket.gethostbyname(socket.gethostname())
 
     def log(self, text):
-        if self.logger:
-            self.logger(f"[Network] {text}")
+        if self.logger: self.logger(f"[Network] {text}")
 
     def start_server(self):
+        """Start the background thread that accepts new TCP connections."""
         thread = threading.Thread(target=self._server_loop, daemon=True)
         thread.start()
 
@@ -66,6 +70,7 @@ class NetworkNode:
                 except: pass
 
     def _recv_all(self, conn, n):
+        """Helper to ensure exactly n bytes are read (handling TCP fragmentation)."""
         data = bytearray()
         while len(data) < n:
             packet = conn.recv(n - len(data))
@@ -74,15 +79,20 @@ class NetworkNode:
         return data
 
     def _handle_client(self, conn, addr):
+        """Thread dedicated to listening to a specific connected peer."""
         peer_id = None
         try:
             while self.running:
+                # 1. Read Message Length Header (4 bytes)
                 header = self._recv_all(conn, 4)
                 if not header: break
                 msg_len = struct.unpack('>I', header)[0]
+                
+                # 2. Read Exact Payload
                 data = self._recv_all(conn, msg_len)
                 if not data: break
                 
+                # 3. Deserialize
                 msg = pickle.loads(data)
                 peer_id = str(msg.sender_id)
                 
@@ -97,6 +107,7 @@ class NetworkNode:
         except Exception as e:
             if self.running:
                 self.log(f"Peer {peer_id} disconnected: {e}")
+                # If Host disconnected, trigger election
                 if self.state.is_host(peer_id) and self.election:
                     self.election.start_election()
                 
@@ -105,6 +116,7 @@ class NetworkNode:
             conn.close()
 
     def connect_to_peer(self, node_id, ip, port):
+        """Initiates a TCP connection to a discovered peer."""
         node_id = str(node_id)
         if node_id == self.node_id or node_id in self.connections: return
         try:
@@ -113,10 +125,10 @@ class NetworkNode:
             s.connect((ip, port))
             s.settimeout(None)
             self.connections[node_id] = s
-            # Initial update without name (will be updated via HELLO)
+            
             self.state.update_peer(node_id, ip, port)
 
-            # Send Identity (ID + Name)
+            # Exchange Identities
             payload = {'id': self.node_id, 'name': self.display_name, 'is_reply': False}
             
             if self.state.is_host(self.node_id):
@@ -129,10 +141,15 @@ class NetworkNode:
             self.log(f"Connection failed to {node_id}: {e}")
 
     def send_to_peer(self, node_id, msg_type, payload=None):
+        """Sends a pickle-serialized message prefixed with length header."""
         if node_id not in self.connections: return
+        
         clock = self.state.vector_clock.copy()
+        
+        # Increment logical clock for state-changing messages
         if msg_type in ['QUEUE_SYNC', 'FULL_STATE_SYNC', 'REMOVE_SONG', 'PLAYBACK_STATUS']:
             clock = self.state.increment_clock()
+            
         msg = Message(self.node_id, self.ip, msg_type, payload, clock)
         try:
             data = pickle.dumps(msg)
@@ -142,12 +159,14 @@ class NetworkNode:
             self.connections.pop(node_id, None)
 
     def _process_message(self, msg: Message):
+        """Routes message based on type and checks Causal Ordering."""
         sender_id = str(msg.sender_id)
         if sender_id == self.node_id: return
         
         if msg.msg_type not in ['HEARTBEAT', 'PLAYBACK_SYNC']:
             self.log(f"Processing {msg.msg_type} from {sender_id}")
         
+        # Messages that bypass causal ordering checks (Discovery/Heartbeats)
         bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER', 
                         'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING', 
                         'PLAYBACK_SYNC', 'REMOVE_SONG', 'QUEUE_SYNC', 
@@ -156,11 +175,13 @@ class NetworkNode:
         if msg.msg_type in bypass_types or self.state.can_process(msg):
             self.state.update_clock(msg.vector_clock)
             self._handle_logic(msg)
+            # After processing one, check if we can process any buffered messages
             self._check_buffer()
         else:
             self.state.pending_messages.append(msg)
 
     def _handle_logic(self, msg: Message):
+        """Executes the actual business logic for a received message."""
         m_type = msg.msg_type
         payload = msg.payload
 
@@ -176,16 +197,12 @@ class NetworkNode:
         elif m_type == 'HELLO':
             name = payload.get('name', 'Unknown')
             is_reply = payload.get('is_reply', False)
-            
-            # Update peer info with name
             self.state.update_peer(msg.sender_id, msg.sender_ip, self.port, name)
             
-            # If this is an initial greeting (not a reply), send my identity back
             if not is_reply:
-                reply_payload = {'id': self.node_id, 'name': self.display_name, 'is_reply': True}
-                self.send_to_peer(msg.sender_id, 'HELLO', payload=reply_payload)
+                reply = {'id': self.node_id, 'name': self.display_name, 'is_reply': True}
+                self.send_to_peer(msg.sender_id, 'HELLO', payload=reply)
 
-            # Standard discovery logic
             if not self.state.get_host() or self.state.is_host(msg.sender_id):
                 self.send_to_peer(msg.sender_id, 'REQUEST_STATE')
 
@@ -214,11 +231,13 @@ class NetworkNode:
             if self.election:
                 if m_type == 'ELECTION': 
                     self.election.on_election_received(msg.sender_id, payload.get('uptime'))
-                elif m_type == 'ANSWER': self.election.on_answer_received()
+                elif m_type == 'ANSWER': 
+                    self.election.on_answer_received()
                 elif m_type == 'COORDINATOR': 
                     leader_id = payload['leader_id']
                     self.election.on_coordinator_received(leader_id)
-                    if leader_id != self.node_id and self.audio: self.audio.stop()
+                    if leader_id != self.node_id and self.audio: 
+                        self.audio.stop()
         
         elif m_type == 'QUEUE_SYNC':
             song = payload.get('song')
@@ -255,6 +274,7 @@ class NetworkNode:
             self.state.repeat_mode = payload.get('repeat_mode', 0)
 
     def _check_buffer(self):
+        """Re-evaluates pending messages to see if dependencies are now met."""
         changed = True
         while changed:
             changed = False

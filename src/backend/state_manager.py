@@ -1,17 +1,21 @@
+"""
+STATE MANAGER
+-------------
+Stores the application data: Playlist, Peers, Uptime, and Host ID.
+Crucially, handles the Vector Clocks logic for distributed consistency.
+"""
+
 import threading
 from typing import Dict, List, Any
 from src.utils.models import Song, Message
 
 class StateManager:
-    """Manages the distributed state, including Vector Clocks and Playlist Queue."""
-    
     def __init__(self, node_id, logger_callback=None):
         self.node_id = node_id
         self.logger = logger_callback
         
-        # Local state
+        # Data State
         self.playlist: List[Song] = []
-        # peers: node_id -> {ip, port, status, display_name}
         self.peers: Dict[str, Dict[str, Any]] = {} 
         
         # Playback State
@@ -19,14 +23,12 @@ class StateManager:
         self.current_song_pos = 0
         self.is_playing = False
         self.shuffle_active = False
-        
-        # Repeat Mode: 0 = Off, 1 = Repeat All, 2 = Repeat One
-        self.repeat_mode = 0 
+        self.repeat_mode = 0 # 0=Off, 1=All, 2=One
         
         # Vector Clock: {node_id: counter}
         self.vector_clock: Dict[str, int] = {self.node_id: 0}
         
-        # Message buffer for causal ordering
+        # Message buffer for out-of-order messages
         self.pending_messages: List[Message] = []
 
         self.uptime = 0
@@ -37,31 +39,33 @@ class StateManager:
         if self.logger: self.logger(f"[State] {text}")
 
     def increment_clock(self):
-        """Called before sending a message."""
+        """Called before sending a state-altering message."""
         with self.lock:
             self.vector_clock[self.node_id] = self.vector_clock.get(self.node_id, 0) + 1
             return self.vector_clock.copy()
 
     def update_clock(self, incoming_clock: Dict[str, int]):
-        """Synchronizes local clock with incoming message clock."""
+        """Merges incoming clock with local clock (taking max values)."""
         with self.lock:
             for uid, count in incoming_clock.items():
                 self.vector_clock[uid] = max(self.vector_clock.get(uid, 0), count)
 
     def can_process(self, msg: Message) -> bool:
         """
-        Checks Causal Ordering:
-        1. V_msg[sender] == V_local[sender] + 1
-        2. V_msg[other] <= V_local[other] for all other keys
+        CAUSAL ORDERING CHECK
+        ---------------------
+        Ensures a message is processed only if:
+        1. It is the immediate next message from the sender.
+        2. We have seen all other messages that the sender had seen when they sent it.
         """
         sender = msg.sender_id
         msg_clock = msg.vector_clock
         
-        # Check condition 1
+        # Condition 1: Is this the next expected message from sender?
         if msg_clock.get(sender, 0) != self.vector_clock.get(sender, 0) + 1:
             return False
             
-        # Check condition 2
+        # Condition 2: Have we seen everything the sender has seen?
         for uid, count in msg_clock.items():
             if uid != sender:
                 if count > self.vector_clock.get(uid, 0):
@@ -78,6 +82,7 @@ class StateManager:
                 
             self.peers[node_id] = existing
             
+            # Initialize clock entry for new peer
             if node_id not in self.vector_clock:
                 self.vector_clock[node_id] = 0
         

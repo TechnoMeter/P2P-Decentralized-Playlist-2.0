@@ -1,3 +1,9 @@
+"""
+DATA MODELS
+-----------
+Simple dataclasses used for serialization across the network.
+"""
+
 from dataclasses import dataclass, field
 import uuid
 import time
@@ -5,7 +11,7 @@ from typing import Dict, Any, Optional
 
 @dataclass
 class Song:
-    """Represents a music track in the decentralized queue."""
+    """Represents a single track in the shared playlist."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     title: str = "Unknown Title"
     artist: str = "Unknown Artist"
@@ -15,12 +21,14 @@ class Song:
 
 @dataclass
 class Message:
-    """Standard envelope for all network traffic (Discovery, Election, Sync)."""
+    """
+    Standard envelope for network communication.
+    Includes Vector Clock for causal consistency.
+    """
     sender_id: str
     sender_ip: str
-    msg_type: str  # 'HELLO', 'ELECTION', 'COORDINATOR', 'HEARTBEAT', 'QUEUE_SYNC'
+    msg_type: str  # e.g., 'HELLO', 'ELECTION', 'QUEUE_SYNC'
     payload: Any = None
-    # Vector Clock for Causal Ordering
     vector_clock: Dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
