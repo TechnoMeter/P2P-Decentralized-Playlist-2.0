@@ -291,7 +291,6 @@ class CollaborativeNode:
         3. Case-insensitivity (Song.mp3 vs song.mp3) to support cross-OS sync.
         """
         if not file_path: return ""
-        
         # 1. Exact match (Absolute path or relative to CWD)
         if os.path.exists(file_path): 
             return file_path
@@ -301,23 +300,14 @@ class CollaborativeNode:
         normalized_name = file_path.replace('\\', '/').split('/')[-1]
         
         # 3. Define directories to search
-        search_dirs = ['.', 'music', 'songs', 'assets']
+        search_dir = './src/assets/music'
         
-        for d in search_dirs:
-            # A. Check exact match in directory
-            candidate = os.path.join(d, normalized_name)
-            if os.path.exists(candidate):
-                return os.path.abspath(candidate)
-                
-            # B. Check case-insensitive match 
-            # (Fixes issues where Windows sends "Song.mp3" but Mac has "song.mp3")
-            if os.path.exists(d):
-                try:
-                    for f in os.listdir(d):
-                        if f.lower() == normalized_name.lower():
-                            return os.path.abspath(os.path.join(d, f))
-                except OSError:
-                    pass
+        # A. Check exact match in directory
+        self.ui_log(f"normalized name: {normalized_name} in directory {search_dir}")
+        candidate = os.path.join(search_dir, normalized_name)
+        self.ui_log(f"candidate path: {candidate}")
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
             
         return file_path
 
