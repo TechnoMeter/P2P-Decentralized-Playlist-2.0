@@ -1674,14 +1674,17 @@ if msg_type in ['QUEUE_SYNC', 'FULL_STATE_SYNC', 'REMOVE_SONG']:
     clock = self.state.increment_clock()  # Only these increment
 ```
 
-From `network_node.py:153`:
+From `network_node.py:170` (Updated for Causal Ordering):
 ```python
-bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER',
+# Messages that BYPASS causal ordering (real-time, protocol, or idempotent)
+# NOTE: QUEUE_SYNC, REMOVE_SONG, FULL_STATE_SYNC are NOT in this list
+#       so they WILL be causally ordered via can_process() check
+bypass_types = ['HELLO', 'WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER',
                 'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING',
-                'PLAYBACK_SYNC', 'REMOVE_SONG', 'QUEUE_SYNC']
+                'PLAYBACK_SYNC', 'ACK']
 ```
 
-**Key insight**: Most messages **bypass** the causal check for real-time responsiveness (heartbeats, playback sync). Only playlist-modifying operations enforce strict ordering.
+**Key insight**: Playlist-modifying operations (`QUEUE_SYNC`, `REMOVE_SONG`, `FULL_STATE_SYNC`) are **NOT** in bypass_types, so they go through the `can_process()` causal ordering check. Real-time messages (heartbeats, playback sync) bypass for responsiveness.
 
 ---
 
@@ -1696,3 +1699,317 @@ bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER',
 | Message buffering | `state_manager.py:21` - `pending_messages` |
 | Buffer processing | `network_node.py:226-235` - `_check_buffer()` |
 | Routing decision | `network_node.py:154-159` - process or buffer |
+
+---
+
+## Appendix F: Reliable Ordered Multicast Implementation
+
+### F.1 Overview
+
+The system implements **Reliable Causal Ordered Multicast** for playlist-modifying operations. This ensures:
+
+1. **Reliability**: Messages are retransmitted until acknowledged (or max retries)
+2. **Causal Ordering**: Messages are delivered respecting causal dependencies
+3. **Duplicate Filtering**: Retransmissions don't cause duplicate processing
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              RELIABLE ORDERED MULTICAST STATUS                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Property          │ Status │ Mechanism                         │
+│  ──────────────────┼────────┼──────────────────────────────────│
+│  Reliable          │ ✓ Yes  │ ACKs + retransmission (3 retries)│
+│  Causal Ordered    │ ✓ Yes  │ can_process() + pending_messages │
+│  Duplicate Filter  │ ✓ Yes  │ seen_messages set                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### F.2 Configuration Constants
+
+**Location**: `state_manager.py:6-9`
+
+```python
+# Reliable Multicast Configuration
+ACK_TIMEOUT = 2.0          # Seconds to wait before retransmitting
+MAX_RETRIES = 3            # Maximum retransmission attempts
+RELIABLE_MSG_TYPES = {'QUEUE_SYNC', 'REMOVE_SONG', 'FULL_STATE_SYNC'}
+```
+
+### F.3 New Data Structures
+
+**Location**: `state_manager.py:29-37`
+
+```python
+# ============ RELIABLE MULTICAST STRUCTURES ============
+# Tracks messages awaiting ACKs: {msg_id: {msg, timestamp, pending_peers, retries}}
+self.pending_acks: Dict[str, Dict[str, Any]] = {}
+
+# Tracks received message IDs to filter duplicates (retransmissions)
+self.seen_messages: Set[str] = set()
+
+# Lock for reliable multicast structures
+self.ack_lock = threading.Lock()
+```
+
+**Message Model Update** (`models.py:26`):
+```python
+# Unique Message ID for Reliable Multicast (ACK tracking)
+msg_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+```
+
+### F.4 New Methods in StateManager
+
+| Method | Location | Purpose |
+|--------|----------|---------|
+| `register_pending_ack()` | `state_manager.py:125-137` | Register message awaiting ACKs |
+| `record_ack()` | `state_manager.py:139-156` | Record ACK from peer |
+| `get_messages_to_retransmit()` | `state_manager.py:158-186` | Get timed-out messages for retry |
+| `is_duplicate_message()` | `state_manager.py:188-205` | Check/mark duplicate messages |
+
+### F.5 Reliable Multicast Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      RELIABLE MULTICAST FLOW                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   SENDER                                  RECEIVER                          │
+│      │                                       │                              │
+│      │ 1. _reliable_broadcast()              │                              │
+│      │    - Create msg with unique msg_id    │                              │
+│      │    - Register in pending_acks         │                              │
+│      │                                       │                              │
+│      │── QUEUE_SYNC (msg_id=abc123) ────────►│                              │
+│      │                                       │                              │
+│      │                              2. _process_message()                   │
+│      │                                 - Send ACK immediately               │
+│      │                                 - Check is_duplicate_message()       │
+│      │                                 - If not duplicate: process          │
+│      │                                       │                              │
+│      │◄── ACK (msg_id=abc123) ───────────────│                              │
+│      │                                       │                              │
+│      │ 3. record_ack()                       │                              │
+│      │    - Remove peer from pending_peers   │                              │
+│      │    - If all ACKs received, done!      │                              │
+│      │                                       │                              │
+│ ─ ─ ─│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+│      │         IF NO ACK (timeout 2s)        │                              │
+│ ─ ─ ─│─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+│      │                                       │                              │
+│      │ 4. _retransmission_check()            │                              │
+│      │    (called from maintenance_loop)     │                              │
+│      │                                       │                              │
+│      │── QUEUE_SYNC (msg_id=abc123) ────────►│ (RETRANSMIT)                 │
+│      │                                       │                              │
+│      │                              5. Receiver detects duplicate           │
+│      │                                 - Sends ACK again                    │
+│      │                                 - Skips processing (no duplicate)    │
+│      │                                       │                              │
+│      │◄── ACK (msg_id=abc123) ───────────────│                              │
+│      │                                       │                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### F.6 Sender Side Implementation
+
+**Location**: `main.py:301-349`
+
+```python
+def _broadcast(self, msg_type, payload):
+    """Helper to send a message to all connected TCP peers."""
+    if msg_type in RELIABLE_MSG_TYPES:
+        self._reliable_broadcast(msg_type, payload)
+    else:
+        for pid in list(self.network.connections.keys()):
+            self.network.send_to_peer(pid, msg_type, payload=payload)
+
+def _reliable_broadcast(self, msg_type, payload):
+    """
+    Sends a reliable message to all peers with ACK tracking.
+    Messages will be retransmitted until all peers acknowledge.
+    """
+    target_peers = list(self.network.connections.keys())
+    if not target_peers:
+        return
+
+    # Create message with unique ID
+    clock = self.state.increment_clock()
+    msg = Message(
+        sender_id=self.node_id,
+        sender_ip=self.network.ip,
+        msg_type=msg_type,
+        payload=payload,
+        vector_clock=clock
+    )
+
+    # Register for ACK tracking
+    self.state.register_pending_ack(msg.msg_id, msg, target_peers)
+
+    # Send to all peers
+    for pid in target_peers:
+        self._send_message_direct(pid, msg)
+
+def _retransmission_check(self):
+    """
+    Checks for messages that need retransmission and resends them.
+    Called periodically from maintenance loop.
+    """
+    retransmit_list = self.state.get_messages_to_retransmit()
+    for entry in retransmit_list:
+        msg = entry['msg']
+        peers = entry['peers']
+        for pid in peers:
+            self._send_message_direct(pid, msg)
+```
+
+### F.7 Receiver Side Implementation
+
+**Location**: `network_node.py:154-176`
+
+```python
+def _process_message(self, msg: Message):
+    sender_id = str(msg.sender_id)
+    if sender_id == self.node_id: return
+
+    # ============ RELIABLE MULTICAST: Handle ACK ============
+    if msg.msg_type == 'ACK':
+        ack_msg_id = msg.payload.get('msg_id')
+        if ack_msg_id:
+            self.state.record_ack(ack_msg_id, sender_id)
+        return
+
+    # ============ RELIABLE MULTICAST: Check for duplicates ============
+    if msg.msg_type in RELIABLE_MSG_TYPES:
+        # Send ACK immediately (even for duplicates)
+        self.send_to_peer(sender_id, 'ACK', payload={'msg_id': msg.msg_id})
+
+        # Check if duplicate (retransmission) - if so, skip processing
+        if self.state.is_duplicate_message(msg.msg_id):
+            return
+
+    # Continue with causal ordering check...
+    bypass_types = ['HELLO', 'WELCOME', 'HEARTBEAT', ...]
+    if msg.msg_type in bypass_types or self.state.can_process(msg):
+        self.state.update_clock(msg.vector_clock)
+        self._handle_logic(msg)
+        self._check_buffer()
+    else:
+        self.state.pending_messages.append(msg)
+```
+
+### F.8 Retransmission in Maintenance Loop
+
+**Location**: `main.py:530`
+
+```python
+def _maintenance_loop(self):
+    while self.running:
+        # ... existing maintenance code ...
+
+        self.election.check_for_host_failure()
+
+        # ============ RELIABLE MULTICAST: Check for retransmissions ============
+        self._retransmission_check()
+
+        time.sleep(HEARTBEAT_INTERVAL)
+```
+
+### F.9 Complete Message Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    RELIABLE ORDERED MESSAGE LIFECYCLE                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  USER ACTION: Add Song                                                      │
+│       │                                                                     │
+│       ▼                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 1. SENDER: _reliable_broadcast('QUEUE_SYNC', {song})                │   │
+│  │    - increment_clock() → vector_clock updated                       │   │
+│  │    - Create Message with unique msg_id                              │   │
+│  │    - register_pending_ack(msg_id, msg, [peer1, peer2, ...])         │   │
+│  │    - Send to all peers via TCP                                      │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│       │                                                                     │
+│       ▼                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 2. RECEIVER: _process_message(msg)                                  │   │
+│  │    - msg.msg_type in RELIABLE_MSG_TYPES? YES                        │   │
+│  │    - Send ACK immediately: send_to_peer(sender, 'ACK', {msg_id})    │   │
+│  │    - is_duplicate_message(msg_id)? NO → continue                    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│       │                                                                     │
+│       ▼                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 3. RECEIVER: Causal Ordering Check                                  │   │
+│  │    - msg.msg_type in bypass_types? NO (QUEUE_SYNC not in list)      │   │
+│  │    - can_process(msg)?                                              │   │
+│  │      - YES → update_clock(), _handle_logic(), _check_buffer()       │   │
+│  │      - NO  → pending_messages.append(msg) (buffer for later)        │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│       │                                                                     │
+│       ▼                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 4. SENDER: Receives ACK                                             │   │
+│  │    - record_ack(msg_id, peer_id)                                    │   │
+│  │    - Remove peer from pending_peers                                 │   │
+│  │    - All ACKs received? Delete from pending_acks                    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│       │                                                                     │
+│       ▼                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 5. IF TIMEOUT (no ACK after 2s):                                    │   │
+│  │    - _retransmission_check() finds expired message                  │   │
+│  │    - Retransmit to pending_peers (up to 3 times)                    │   │
+│  │    - Receiver: ACKs again, is_duplicate_message()? YES → skip       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### F.10 Files Modified for Reliable Ordered Multicast
+
+| File | Changes |
+|------|---------|
+| `src/utils/models.py:26` | Added `msg_id` field to `Message` class |
+| `src/backend/state_manager.py:6-9` | Added config constants |
+| `src/backend/state_manager.py:29-37` | Added `pending_acks`, `seen_messages`, `ack_lock` |
+| `src/backend/state_manager.py:123-205` | Added 4 ACK handling methods |
+| `src/backend/network_node.py:9` | Import `RELIABLE_MSG_TYPES` |
+| `src/backend/network_node.py:154-168` | ACK handling and duplicate detection |
+| `src/backend/network_node.py:170` | Removed `QUEUE_SYNC`, `REMOVE_SONG` from bypass_types |
+| `main.py:36` | Import `RELIABLE_MSG_TYPES` and `Message` |
+| `main.py:301-349` | Added `_reliable_broadcast()`, `_send_message_direct()`, `_retransmission_check()` |
+| `main.py:530` | Added `_retransmission_check()` to maintenance loop |
+
+### F.11 Comparison: Before vs After
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| **Message Loss** | Lost forever | Retransmitted up to 3 times |
+| **Duplicate Handling** | Song ID check only | msg_id + seen_messages set |
+| **Causal Ordering** | Bypassed for all messages | Enforced for playlist operations |
+| **ACK Mechanism** | None | Full ACK with timeout |
+| **Message Tracking** | None | pending_acks dict |
+
+### F.12 Logging Output Example
+
+When reliable multicast is working, you'll see logs like:
+
+```
+[14:32:05] [State] [Reliable] Registered msg_id=a1b2c3d4, awaiting ACKs from ['node1', 'node2']
+[14:32:05] [Network] Processing QUEUE_SYNC from node0
+[14:32:05] [State] [Reliable] ACK received for msg_id=a1b2c3d4 from node1. Remaining: {'node2'}
+[14:32:05] [State] [Reliable] ACK received for msg_id=a1b2c3d4 from node2. Remaining: set()
+[14:32:05] [State] [Reliable] msg_id=a1b2c3d4 fully acknowledged!
+```
+
+If retransmission occurs:
+```
+[14:32:07] [State] [Reliable] Retransmit #1 for msg_id=a1b2c3d4 to {'node2'}
+[14:32:07] [State] [Reliable] Duplicate msg_id=a1b2c3d4 detected, ignoring
+[14:32:07] [State] [Reliable] ACK received for msg_id=a1b2c3d4 from node2. Remaining: set()
+```
