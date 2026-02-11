@@ -167,7 +167,7 @@ class NetworkNode:
             if self.state.is_duplicate_message(msg.msg_id):
                 return
 
-        bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER', 'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING', 'PLAYBACK_SYNC', 'REMOVE_SONG', 'QUEUE_SYNC', 'ACK']
+        bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER', 'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING', 'PLAYBACK_SYNC', 'ACK']
         if msg.msg_type in bypass_types or self.state.can_process(msg):
             self.state.update_clock(msg.vector_clock)
             self._handle_logic(msg)
