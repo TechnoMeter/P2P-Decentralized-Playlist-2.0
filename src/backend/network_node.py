@@ -6,6 +6,7 @@ import time
 from typing import Dict
 from src.utils.config import TCP_PORT, BUFFER_SIZE
 from src.utils.models import Message
+from src.backend.state_manager import RELIABLE_MSG_TYPES
 
 class NetworkNode:
     """
@@ -147,10 +148,26 @@ class NetworkNode:
     def _process_message(self, msg: Message):
         sender_id = str(msg.sender_id)
         if sender_id == self.node_id: return
-        if msg.msg_type not in ['HEARTBEAT', 'PLAYBACK_SYNC']:
+        if msg.msg_type not in ['HEARTBEAT', 'PLAYBACK_SYNC', 'ACK']:
             self.log(f"Processing {msg.msg_type} from {sender_id}")
-        
-        bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER', 'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING', 'PLAYBACK_SYNC', 'REMOVE_SONG', 'QUEUE_SYNC']
+
+        # ============ RELIABLE MULTICAST: Handle ACK ============
+        if msg.msg_type == 'ACK':
+            ack_msg_id = msg.payload.get('msg_id')
+            if ack_msg_id:
+                self.state.record_ack(ack_msg_id, sender_id)
+            return
+
+        # ============ RELIABLE MULTICAST: Check for duplicates ============
+        if msg.msg_type in RELIABLE_MSG_TYPES:
+            # Send ACK immediately (even for duplicates)
+            self.send_to_peer(sender_id, 'ACK', payload={'msg_id': msg.msg_id})
+
+            # Check if duplicate (retransmission) - if so, skip processing
+            if self.state.is_duplicate_message(msg.msg_id):
+                return
+
+        bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER', 'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING', 'PLAYBACK_SYNC', 'REMOVE_SONG', 'QUEUE_SYNC', 'ACK']
         if msg.msg_type in bypass_types or self.state.can_process(msg):
             self.state.update_clock(msg.vector_clock)
             self._handle_logic(msg)

@@ -1343,3 +1343,356 @@ def get_local_ip():
 
 *Document generated for P2P Decentralized Playlist v2.0*
 *Last Updated: 2026*
+
+---
+
+## Appendix E: Vector Clocks Deep Dive with Detailed Examples
+
+### E.1 The Problem Vector Clocks Solve
+
+In distributed systems, events happen concurrently across different nodes. There's **no global clock** - each node has its own view of time. Vector clocks answer: *"Did event A happen before event B, or were they concurrent?"*
+
+### E.2 How It Works
+
+Each node maintains a **vector** (dictionary) with one counter per known node:
+
+```
+Node A's clock: {A: 5, B: 3, C: 2}
+Node B's clock: {A: 4, B: 7, C: 2}
+Node C's clock: {A: 4, B: 6, C: 4}
+```
+
+### E.3 The Three Rules
+
+| Rule | When | Action |
+|------|------|--------|
+| **1. Increment** | Before sending a message | Increment YOUR OWN counter |
+| **2. Attach** | When sending | Include entire vector in message |
+| **3. Merge** | On receive | Take `max()` of each entry |
+
+---
+
+### E.4 Key Files and Functions
+
+| File | Function | Purpose |
+|------|----------|---------|
+| `src/utils/models.py:24` | `Message.vector_clock` | Every message carries a clock |
+| `src/backend/state_manager.py:32-36` | `increment_clock()` | Bumps counter before sending |
+| `src/backend/state_manager.py:38-42` | `update_clock()` | Merges incoming clock |
+| `src/backend/state_manager.py:44-62` | `can_process()` | Checks causal ordering |
+| `src/backend/network_node.py:147-159` | `_process_message()` | Routes based on causality check |
+| `src/backend/network_node.py:226-235` | `_check_buffer()` | Processes buffered messages |
+
+---
+
+### E.5 Detailed Example: Three Nodes Adding Songs
+
+#### Initial State
+
+Three nodes join the network. Each has a vector clock initialized:
+
+```
+Node A: {A: 0}
+Node B: {B: 0}
+Node C: {C: 0}
+```
+
+After peer discovery, clocks expand:
+```
+Node A: {A: 0, B: 0, C: 0}
+Node B: {A: 0, B: 0, C: 0}
+Node C: {A: 0, B: 0, C: 0}
+```
+
+---
+
+#### Scenario: Node A Adds "Song1"
+
+**Step 1: A calls `increment_clock()`** (`state_manager.py:32-36`)
+```python
+def increment_clock(self):
+    with self.lock:
+        self.vector_clock[self.node_id] = self.vector_clock.get(self.node_id, 0) + 1
+        return self.vector_clock.copy()
+```
+Node A's clock: `{A: 1, B: 0, C: 0}`
+
+**Step 2: A sends QUEUE_SYNC** (`network_node.py:134-145`)
+```python
+def send_to_peer(self, node_id, msg_type, payload=None):
+    clock = self.state.vector_clock.copy()
+    if msg_type in ['QUEUE_SYNC', 'FULL_STATE_SYNC', 'REMOVE_SONG']:
+        clock = self.state.increment_clock()  # <-- Called here
+    msg = Message(self.node_id, self.ip, msg_type, payload, clock)
+```
+
+Message sent to B and C:
+```
+Message {
+    sender_id: "A",
+    msg_type: "QUEUE_SYNC",
+    payload: {song: "Song1"},
+    vector_clock: {A: 1, B: 0, C: 0}
+}
+```
+
+---
+
+#### Step 3: Node B Receives the Message
+
+**In `_process_message()`** (`network_node.py:147-159`):
+
+```python
+def _process_message(self, msg: Message):
+    bypass_types = ['HELLO', 'WELCOME', 'HEARTBEAT', ...]
+
+    if msg.msg_type in bypass_types or self.state.can_process(msg):
+        self.state.update_clock(msg.vector_clock)  # Merge clocks
+        self._handle_logic(msg)                     # Process message
+        self._check_buffer()                        # Check buffered messages
+    else:
+        self.state.pending_messages.append(msg)     # Buffer for later
+```
+
+**The `can_process()` check** (`state_manager.py:44-62`):
+
+```python
+def can_process(self, msg: Message) -> bool:
+    sender = msg.sender_id        # "A"
+    msg_clock = msg.vector_clock  # {A: 1, B: 0, C: 0}
+
+    # Rule 1: Is this the NEXT expected message from A?
+    # V_msg[A] == V_local[A] + 1
+    # 1 == 0 + 1 ✓
+    if msg_clock.get(sender, 0) != self.vector_clock.get(sender, 0) + 1:
+        return False
+
+    # Rule 2: No missing dependencies from other senders
+    # V_msg[B] <= V_local[B] → 0 <= 0 ✓
+    # V_msg[C] <= V_local[C] → 0 <= 0 ✓
+    for uid, count in msg_clock.items():
+        if uid != sender:
+            if count > self.vector_clock.get(uid, 0):
+                return False
+    return True  # Can process!
+```
+
+**After `update_clock()`** (`state_manager.py:38-42`):
+```python
+def update_clock(self, incoming_clock: Dict[str, int]):
+    with self.lock:
+        for uid, count in incoming_clock.items():
+            self.vector_clock[uid] = max(self.vector_clock.get(uid, 0), count)
+```
+
+Node B's clock becomes: `{A: 1, B: 0, C: 0}`
+
+---
+
+### E.6 Complex Scenario: Out-of-Order Messages
+
+Now B and C both add songs **concurrently**:
+
+```
+Timeline:
+   A                    B                    C
+   │                    │                    │
+   │                    │ adds "Song2"       │ adds "Song3"
+   │                    │ clock: {A:1,B:1,C:0}│ clock: {A:1,B:0,C:1}
+   │                    │                    │
+   │                    │─── QUEUE_SYNC ────►│ (arrives LATE)
+   │                    │                    │
+   │◄── QUEUE_SYNC ─────│                    │
+   │◄──────────────────────────────────────── │
+   │                    │                    │
+```
+
+**At Node A, C's message arrives BEFORE B's message:**
+
+C's message: `{A:1, B:0, C:1}` arrives first at A
+B's message: `{A:1, B:1, C:0}` arrives second at A
+
+**Processing C's message at Node A:**
+```
+A's clock: {A: 1, B: 0, C: 0}
+C's message clock: {A: 1, B: 0, C: 1}
+
+can_process() check:
+  - sender = "C"
+  - Rule 1: V_msg[C] == V_local[C] + 1 → 1 == 0 + 1 ✓
+  - Rule 2: V_msg[A] <= V_local[A] → 1 <= 1 ✓
+           V_msg[B] <= V_local[B] → 0 <= 0 ✓
+  - Result: CAN PROCESS ✓
+
+A's clock after: {A: 1, B: 0, C: 1}
+```
+
+**Processing B's message at Node A:**
+```
+A's clock: {A: 1, B: 0, C: 1}
+B's message clock: {A: 1, B: 1, C: 0}
+
+can_process() check:
+  - sender = "B"
+  - Rule 1: V_msg[B] == V_local[B] + 1 → 1 == 0 + 1 ✓
+  - Rule 2: V_msg[A] <= V_local[A] → 1 <= 1 ✓
+           V_msg[C] <= V_local[C] → 0 <= 1 ✓
+  - Result: CAN PROCESS ✓
+
+A's clock after: {A: 1, B: 1, C: 1}
+```
+
+**Both messages processed correctly!** Order doesn't matter because they're *concurrent* events.
+
+---
+
+### E.7 Scenario: True Causal Dependency Violation
+
+What if C's message depended on B's? Say C received B's Song2 and then added Song3:
+
+```
+B's clock when sending:     {A:1, B:1, C:0}
+C receives B's message
+C's clock after receive:    {A:1, B:1, C:0}
+C increments and sends:     {A:1, B:1, C:1}
+```
+
+**Now at Node A, if C's message arrives BEFORE B's:**
+
+```
+A's clock: {A: 1, B: 0, C: 0}
+C's message clock: {A: 1, B: 1, C: 1}
+
+can_process() check:
+  - sender = "C"
+  - Rule 1: V_msg[C] == V_local[C] + 1 → 1 == 0 + 1 ✓
+  - Rule 2: V_msg[B] <= V_local[B] → 1 <= 0 ✗ FAILS!
+
+  Result: CANNOT PROCESS - BUFFER IT
+```
+
+The message goes to `pending_messages` (`network_node.py:159`):
+```python
+else:
+    self.state.pending_messages.append(msg)
+```
+
+**Later, B's message arrives:**
+```
+A processes B's message: clock becomes {A:1, B:1, C:0}
+Then _check_buffer() runs:
+```
+
+**The `_check_buffer()` function** (`network_node.py:226-235`):
+```python
+def _check_buffer(self):
+    changed = True
+    while changed:
+        changed = False
+        for msg in self.state.pending_messages[:]:
+            if self.state.can_process(msg):      # Re-check C's message
+                self.state.update_clock(msg.vector_clock)
+                self._handle_logic(msg)
+                self.state.pending_messages.remove(msg)
+                changed = True
+```
+
+Now C's message passes:
+```
+A's clock: {A: 1, B: 1, C: 0}
+C's message clock: {A: 1, B: 1, C: 1}
+
+can_process() re-check:
+  - Rule 1: 1 == 0 + 1 ✓
+  - Rule 2: B: 1 <= 1 ✓, A: 1 <= 1 ✓
+  - Result: CAN PROCESS ✓
+```
+
+---
+
+### E.8 Visual Flow Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    VECTOR CLOCK MESSAGE FLOW                              │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   SENDER (Node A)                           RECEIVER (Node B)            │
+│                                                                          │
+│   1. User adds song                                                      │
+│         │                                                                │
+│         ▼                                                                │
+│   ┌─────────────────┐                                                    │
+│   │ increment_clock()│  A's clock: {A:0,B:0} → {A:1,B:0}                 │
+│   └────────┬────────┘                                                    │
+│            │                                                             │
+│            ▼                                                             │
+│   ┌─────────────────┐                                                    │
+│   │ send_to_peer()  │  Message with clock {A:1,B:0}                      │
+│   └────────┬────────┘                                                    │
+│            │                                                             │
+│            │  ─────────── TCP ───────────►  ┌─────────────────────┐     │
+│            │                                │ _process_message()   │     │
+│            │                                └──────────┬──────────┘     │
+│            │                                           │                 │
+│            │                                           ▼                 │
+│            │                                ┌─────────────────────┐     │
+│            │                                │   can_process()?    │     │
+│            │                                └──────────┬──────────┘     │
+│            │                                           │                 │
+│            │                           YES ◄───────────┼───────► NO      │
+│            │                            │              │          │      │
+│            │                            ▼              │          ▼      │
+│            │                   ┌──────────────┐       │  ┌─────────────┐│
+│            │                   │update_clock()│       │  │pending_msgs ││
+│            │                   │B:{A:1,B:0}   │       │  │.append(msg) ││
+│            │                   └──────┬───────┘       │  └─────────────┘│
+│            │                          │               │                 │
+│            │                          ▼               │                 │
+│            │                   ┌──────────────┐       │                 │
+│            │                   │_handle_logic()│      │                 │
+│            │                   │(add song)     │      │                 │
+│            │                   └──────┬───────┘       │                 │
+│            │                          │               │                 │
+│            │                          ▼               │                 │
+│            │                   ┌──────────────┐       │                 │
+│            │                   │_check_buffer()│◄─────┘                 │
+│            │                   │(retry pending)│                        │
+│            │                   └──────────────┘                         │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### E.9 Which Messages Use Vector Clocks?
+
+From `network_node.py:136-138`:
+
+```python
+if msg_type in ['QUEUE_SYNC', 'FULL_STATE_SYNC', 'REMOVE_SONG']:
+    clock = self.state.increment_clock()  # Only these increment
+```
+
+From `network_node.py:153`:
+```python
+bypass_types = ['HELLO','WELCOME', 'HEARTBEAT', 'ELECTION', 'ANSWER',
+                'COORDINATOR', 'REQUEST_STATE', 'NOW_PLAYING',
+                'PLAYBACK_SYNC', 'REMOVE_SONG', 'QUEUE_SYNC']
+```
+
+**Key insight**: Most messages **bypass** the causal check for real-time responsiveness (heartbeats, playback sync). Only playlist-modifying operations enforce strict ordering.
+
+---
+
+### E.10 Summary Table
+
+| Concept | Implementation Location |
+|---------|------------------------|
+| Clock data structure | `state_manager.py:17` - `Dict[str, int]` |
+| Increment before send | `state_manager.py:32-36` - `increment_clock()` |
+| Merge on receive | `state_manager.py:38-42` - `update_clock()` |
+| Causality check | `state_manager.py:44-62` - `can_process()` |
+| Message buffering | `state_manager.py:21` - `pending_messages` |
+| Buffer processing | `network_node.py:226-235` - `_check_buffer()` |
+| Routing decision | `network_node.py:154-159` - process or buffer |

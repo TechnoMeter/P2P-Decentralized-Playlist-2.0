@@ -22,6 +22,8 @@ class Message:
     payload: Any = None
     # Vector Clock for Causal Ordering
     vector_clock: Dict[str, int] = field(default_factory=dict)
+    # Unique Message ID for Reliable Multicast (ACK tracking)
+    msg_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
 
     def __post_init__(self):
         if self.payload is None:

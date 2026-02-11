@@ -27,12 +27,12 @@ from tkinter import messagebox
 
 from src.backend.discovery import DiscoveryManager
 from src.backend.network_node import NetworkNode
-from src.backend.state_manager import StateManager
+from src.backend.state_manager import StateManager, RELIABLE_MSG_TYPES
 from src.backend.bully_election import ElectionManager
 from src.backend.audio_engine import AudioEngine
 from src.utils.config import TCP_PORT, HEARTBEAT_INTERVAL
 from src.frontend.app_ui import PlaylistUI
-from src.utils.models import Song
+from src.utils.models import Song, Message
 
 # --- PATCHED NETWORK CLASS ---
 class PatchedNetworkNode(NetworkNode):
@@ -300,8 +300,66 @@ class CollaborativeNode:
 
     def _broadcast(self, msg_type, payload):
         """Helper to send a message to all connected TCP peers."""
-        for pid in list(self.network.connections.keys()):
-            self.network.send_to_peer(pid, msg_type, payload=payload)
+        if msg_type in RELIABLE_MSG_TYPES:
+            self._reliable_broadcast(msg_type, payload)
+        else:
+            for pid in list(self.network.connections.keys()):
+                self.network.send_to_peer(pid, msg_type, payload=payload)
+
+    def _reliable_broadcast(self, msg_type, payload):
+        """
+        Sends a reliable message to all peers with ACK tracking.
+        Messages will be retransmitted until all peers acknowledge.
+        """
+        target_peers = list(self.network.connections.keys())
+        if not target_peers:
+            return  # No peers to send to
+
+        # Create message with unique ID
+        clock = self.state.increment_clock()
+        msg = Message(
+            sender_id=self.node_id,
+            sender_ip=self.network.ip,
+            msg_type=msg_type,
+            payload=payload,
+            vector_clock=clock
+        )
+
+        self.ui_log(f"[Reliable] Broadcasting {msg_type} (msg_id={msg.msg_id}) to {len(target_peers)} peers")
+
+        # Register for ACK tracking
+        self.state.register_pending_ack(msg.msg_id, msg, target_peers)
+
+        # Send to all peers
+        for pid in target_peers:
+            self._send_message_direct(pid, msg)
+
+    def _send_message_direct(self, node_id, msg: Message):
+        """Sends a pre-constructed Message object directly (for retransmissions)."""
+        if node_id not in self.network.connections:
+            return
+        try:
+            import struct
+            import pickle
+            data = pickle.dumps(msg)
+            header = struct.pack('>I', len(data))
+            self.network.connections[node_id].sendall(header + data)
+        except Exception as e:
+            self.ui_log(f"[Reliable] Send failed to {node_id}: {e}")
+            self.network.connections.pop(node_id, None)
+
+    def _retransmission_check(self):
+        """
+        Checks for messages that need retransmission and resends them.
+        Called periodically from maintenance loop.
+        """
+        retransmit_list = self.state.get_messages_to_retransmit()
+        for entry in retransmit_list:
+            msg = entry['msg']
+            peers = entry['peers']
+            self.ui_log(f"[Reliable] Retransmitting msg_id={entry['msg_id']} to {peers}")
+            for pid in peers:
+                self._send_message_direct(pid, msg)
 
     def _broadcast_full_state(self):
         """Sends the entire playlist and status state to all peers."""
@@ -476,6 +534,10 @@ class CollaborativeNode:
                             self.state.current_song_pos = self.state.current_duration
                     
                 self.election.check_for_host_failure()
+
+                # ============ RELIABLE MULTICAST: Check for retransmissions ============
+                self._retransmission_check()
+
                 time.sleep(HEARTBEAT_INTERVAL)
             except Exception as e:
                 print(f"Error in maintenance loop: {e}")
