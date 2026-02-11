@@ -79,6 +79,8 @@ class DiscoveryManager:
             s.sendto(pickle.dumps(msg), ('<broadcast>', UDP_PORT))
             # Also send to localhost explicitly to help local instances find each other
             s.sendto(pickle.dumps(msg), ('127.0.0.1', UDP_PORT))
+            # Send to all local network interfaces
+            s.sendto(pickle.dumps(msg), ('255.255.255.255', UDP_PORT))
             self.log("Broadcasted presence to network.")
 
     def stop(self):
