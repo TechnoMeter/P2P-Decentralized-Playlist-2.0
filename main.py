@@ -397,9 +397,7 @@ class CollaborativeNode:
         search_dir = './src/assets/music'
         
         # A. Check exact match in directory
-        self.ui_log(f"normalized name: {normalized_name} in directory {search_dir}")
         candidate = os.path.join(search_dir, normalized_name)
-        self.ui_log(f"candidate path: {candidate}")
         if os.path.exists(candidate):
             return os.path.abspath(candidate)
             
